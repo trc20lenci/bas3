@@ -3,7 +3,7 @@ package com.base.editor.media.gl
 import android.content.Context
 import android.opengl.GLES20
 import android.util.Log
-import android.util.Size
+import androidx.media3.common.util.Size
 import androidx.media3.common.VideoFrameProcessingException
 import androidx.media3.common.util.GlProgram
 import androidx.media3.common.util.GlUtil
