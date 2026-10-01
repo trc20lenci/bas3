@@ -34,7 +34,7 @@ jobs:
       - name: Report errors
         if: failure()
         run: |
-          msg=$(grep -hE "^e: |What went wrong|^> |error:|Execution failed|Could not " build.log test.log 2>/dev/null | head -60 | sed 's#file:///home/runner/work/[^/]*/[^/]*/##' | awk '{printf "%s%%0A", $0}')
+          msg=$(grep -hE -A25 "^e: |What went wrong|Caused by|requires" build.log test.log 2>/dev/null | head -120 | sed 's#file:///home/runner/work/[^/]*/[^/]*/##' | awk '{printf "%s%%0A", $0}')
           echo "::error title=Build errors::${msg}"
 
       - name: Upload APK
