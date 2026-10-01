@@ -1,0 +1,178 @@
+[
+ {
+  "id": "fade",
+  "label": "Наплыв"
+ },
+ {
+  "id": "fadecolor",
+  "label": "Через цвет"
+ },
+ {
+  "id": "fadegrayscale",
+  "label": "Через ч/б"
+ },
+ {
+  "id": "dissolve",
+  "label": "Растворение"
+ },
+ {
+  "id": "wipeLeft",
+  "label": "Шторка влево"
+ },
+ {
+  "id": "wipeRight",
+  "label": "Шторка вправо"
+ },
+ {
+  "id": "wipeUp",
+  "label": "Шторка вверх"
+ },
+ {
+  "id": "wipeDown",
+  "label": "Шторка вниз"
+ },
+ {
+  "id": "directionalwarp",
+  "label": "Искажение"
+ },
+ {
+  "id": "crosswarp",
+  "label": "Кросс-варп"
+ },
+ {
+  "id": "circleopen",
+  "label": "Круг"
+ },
+ {
+  "id": "circle",
+  "label": "Круг-вспышка"
+ },
+ {
+  "id": "swap",
+  "label": "Обмен"
+ },
+ {
+  "id": "cube",
+  "label": "Куб"
+ },
+ {
+  "id": "Radial",
+  "label": "Радиальный"
+ },
+ {
+  "id": "Dreamy",
+  "label": "Мечта"
+ },
+ {
+  "id": "DreamyZoom",
+  "label": "Мечтательный зум"
+ },
+ {
+  "id": "CrossZoom",
+  "label": "Кросс-зум"
+ },
+ {
+  "id": "SimpleZoom",
+  "label": "Зум"
+ },
+ {
+  "id": "ripple",
+  "label": "Рябь"
+ },
+ {
+  "id": "WaterDrop",
+  "label": "Капля"
+ },
+ {
+  "id": "Swirl",
+  "label": "Вихрь"
+ },
+ {
+  "id": "kaleidoscope",
+  "label": "Калейдоскоп"
+ },
+ {
+  "id": "windowslice",
+  "label": "Жалюзи"
+ },
+ {
+  "id": "windowblinds",
+  "label": "Планки"
+ },
+ {
+  "id": "doorway",
+  "label": "Дверь"
+ },
+ {
+  "id": "squeeze",
+  "label": "Сжатие"
+ },
+ {
+  "id": "hexagonalize",
+  "label": "Соты"
+ },
+ {
+  "id": "heart",
+  "label": "Сердце"
+ },
+ {
+  "id": "pinwheel",
+  "label": "Вертушка"
+ },
+ {
+  "id": "rotate_scale_fade",
+  "label": "Поворот"
+ },
+ {
+  "id": "GlitchMemories",
+  "label": "Глитч"
+ },
+ {
+  "id": "StereoViewer",
+  "label": "Стерео"
+ },
+ {
+  "id": "Bounce",
+  "label": "Отскок"
+ },
+ {
+  "id": "LinearBlur",
+  "label": "Размытие"
+ },
+ {
+  "id": "randomsquares",
+  "label": "Квадраты"
+ },
+ {
+  "id": "squareswire",
+  "label": "Сетка"
+ },
+ {
+  "id": "angular",
+  "label": "Угловой"
+ },
+ {
+  "id": "colorphase",
+  "label": "Цветовая фаза"
+ },
+ {
+  "id": "crosshatch",
+  "label": "Штриховка"
+ },
+ {
+  "id": "flyeye",
+  "label": "Фасетка"
+ },
+ {
+  "id": "directionalwipe",
+  "label": "Косая шторка"
+ },
+ {
+  "id": "undulatingBurnOut",
+  "label": "Волнистый жар"
+ },
+ {
+  "id": "x_axis_translation",
+  "label": "Сдвиг по X"
+ }
+]

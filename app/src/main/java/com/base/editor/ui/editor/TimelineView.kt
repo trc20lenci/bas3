@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.base.editor.core.Clip
 import com.base.editor.core.MediaType
+import com.base.editor.core.Transition
 import com.base.editor.data.Format
 import com.base.editor.data.Thumbs
 import com.base.editor.ui.theme.BaseColors
@@ -54,8 +55,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * Мобильный многодорожечный холст. Модель — rows/actions из react-timeline-editor,
- * но ввод — тач: курсор (playhead) неподвижен по центру, шкала едет под ним.
+ * Мобильный многодорожечный холст: курсор (playhead) неподвижен по центру, шкала едет под ним.
  *  • сдвиг пальцем по пустому месту/невыбранному клипу — скраб (+ инерция)
  *  • щипок двумя пальцами — зум
  *  • перетаскивание ВЫБРАННОГО клипа — перемещение (с магнитом и «перепрыгиванием» соседей)
@@ -63,7 +63,7 @@ import kotlin.math.roundToInt
  */
 @Composable
 fun TimelineView(
-    clips: List<Clip>, selectedId: Long?, playheadMs: Long, totalMs: Long, pxPerSecDp: Float,
+    clips: List<Clip>, transitions: List<Transition>, selectedId: Long?, playheadMs: Long, totalMs: Long, pxPerSecDp: Float,
     actions: TimelineActions, modifier: Modifier = Modifier,
 ) {
     val ctx = LocalContext.current
@@ -74,7 +74,7 @@ fun TimelineView(
     var tick by remember { mutableIntStateOf(0) }          // перерисовка после подгрузки миниатюр
 
     val geo = Geo(density, widthPx.toFloat(), playheadMs, pxPerSecDp)
-    val cur by rememberUpdatedState(TlState(geo, clips, selectedId, totalMs))
+    val cur by rememberUpdatedState(TlState(geo, clips, transitions, selectedId, totalMs))
     val act by rememberUpdatedState(actions)
 
     // Очередь миниатюр: draw только регистрирует недостающие ключи, загрузка — здесь.
@@ -155,6 +155,7 @@ fun TimelineView(
                         Mode.PENDING -> when (hit) {                                // тап
                             is Hit.Body -> act.select(hit.clip.id)
                             is Hit.Handle -> act.select(hit.clip.id)
+                            is Hit.Junction -> act.openTransitions(hit.leftId)
                             Hit.Plus -> act.addMedia()
                             Hit.AudioSlot -> act.addAudio()
                             Hit.TextSlot -> act.addText()
@@ -186,6 +187,7 @@ private class ThumbReq(val key: String, val uri: String, val type: MediaType, va
 private sealed interface Hit {
     class Body(val clip: Clip) : Hit
     class Handle(val clip: Clip, val start: Boolean) : Hit
+    class Junction(val leftId: Long) : Hit
     data object Plus : Hit
     data object AudioSlot : Hit
     data object TextSlot : Hit
@@ -201,14 +203,26 @@ class Geo(private val d: Density, val width: Float, val playheadMs: Long, val px
     val rulerH = dp(28); val mainTop = dp(36); val mainH = dp(64)
     val audioTop = mainTop + mainH + dp(10); val slotH = dp(44)
     val textTop = audioTop + slotH + dp(8)
-    val handleW = dp(14); val handleSlop = dp(14); val plusSize = dp(48); val corner = dp(8)
+    val junctionR = dp(15); val handleW = dp(14); val handleSlop = dp(14); val plusSize = dp(48); val corner = dp(8)
     val total: Float get() = textTop + slotH
 }
 
-private class TlState(val geo: Geo, val clips: List<Clip>, val selectedId: Long?, val totalMs: Long) {
+private class TlState(val geo: Geo, val clips: List<Clip>, val transitions: List<Transition>, val selectedId: Long?, val totalMs: Long) {
+    /** Стыки соседних клипов основной дорожки: (левый клип, правый клип). Кнопки скрыты у выбранного клипа. */
+    fun junctions(): List<Pair<Clip, Clip>> {
+        val main = clips.filter { it.row == 0 }
+        return main.mapNotNull { l ->
+            val r = main.firstOrNull { it.startMs == l.endMs && it.id != l.id } ?: return@mapNotNull null
+            if (l.id == selectedId || r.id == selectedId) null else l to r
+        }
+    }
+
     fun hit(p: Offset): Hit {
         val g = geo
         if (p.y in g.mainTop..(g.mainTop + g.mainH)) {
+            junctions().forEach { (l, _) ->
+                if (abs(p.x - g.x(l.endMs)) <= g.junctionR + g.handleSlop / 2) return Hit.Junction(l.id)
+            }
             clips.filter { it.row == 0 }.forEach { c ->
                 val l = g.x(c.startMs); val r = g.x(c.endMs)
                 if (c.id == selectedId) {
@@ -305,6 +319,20 @@ private fun DrawScope.drawTimeline(s: TlState, measurer: androidx.compose.ui.tex
                 drawText(m, topLeft = Offset(bx + 5.dp.toPx(), g.mainTop + 7.dp.toPx()))
             }
         }
+    }
+
+    // точки добавления перехода на стыках
+    s.junctions().forEach { (l, _) ->
+        val x = g.x(l.endMs)
+        if (x < -20f || x > g.width + 20f) return@forEach
+        val has = s.transitions.any { it.leftId == l.id }
+        val cy = g.mainTop + g.mainH / 2
+        val r = g.junctionR
+        drawCircle(if (has) BaseColors.Cyan else Color.White, r, Offset(x, cy))
+        val k = 5.dp.toPx(); val ink = Color(0xFF111318)
+        val left = Path().apply { moveTo(x - k * 1.6f, cy - k); lineTo(x - k * .15f, cy); lineTo(x - k * 1.6f, cy + k); close() }
+        val right = Path().apply { moveTo(x + k * 1.6f, cy - k); lineTo(x + k * .15f, cy); lineTo(x + k * 1.6f, cy + k); close() }
+        drawPath(left, ink); drawPath(right, ink)
     }
 
     // кнопка «+» в конце дорожки

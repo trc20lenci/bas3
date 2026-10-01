@@ -7,9 +7,9 @@ import android.provider.OpenableColumns
 import com.base.editor.core.Clip
 import com.base.editor.core.IMAGE_DEFAULT_MS
 import com.base.editor.core.MediaType
-import com.base.editor.core.NativeTimeline
 import com.base.editor.core.PickedMedia
 import com.base.editor.core.ProjectMeta
+import com.base.editor.domain.TimelineModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
@@ -33,13 +33,12 @@ class ProjectRepository private constructor(private val app: Context) {
 
     suspend fun create(items: List<PickedMedia>): String = withContext(Dispatchers.IO) {
         val id = UUID.randomUUID().toString()
-        NativeTimeline().use { tl ->
-            items.forEach { m ->
-                val len = if (m.type == MediaType.VIDEO) m.durationMs else IMAGE_DEFAULT_MS
-                tl.addClip(0, m.type, m.uri, if (m.type == MediaType.VIDEO) m.durationMs else 0, len)
-            }
-            write(id, name = nextName(), timeline = tl.serialize(), clips = tl.clips())
+        val tl = TimelineModel()
+        items.forEach { m ->
+            val len = if (m.type == MediaType.VIDEO) m.durationMs else IMAGE_DEFAULT_MS
+            tl.addClip(0, m.type, m.uri, if (m.type == MediaType.VIDEO) m.durationMs else 0, len)
         }
+        write(id, name = nextName(), timeline = tl.serialize(), clips = tl.state().clips)
         id
     }
 

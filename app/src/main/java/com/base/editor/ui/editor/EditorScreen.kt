@@ -6,6 +6,15 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,14 +77,20 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.TextButton
+import com.base.editor.media.ExportState
 import com.base.editor.R
 import com.base.editor.data.Format
 import com.base.editor.ui.theme.BaseColors
 import com.base.editor.ui.theme.soon
 import kotlin.math.roundToInt
 
+@UnstableApi
 @Composable
 fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewModel = viewModel()) {
     val ctx = LocalContext.current
@@ -91,12 +106,17 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
     val resolution by vm.resolution.collectAsStateWithLifecycle()
     val muted by vm.muted.collectAsStateWithLifecycle()
     val event by vm.events.collectAsStateWithLifecycle()
+    val transitions by vm.transitions.collectAsStateWithLifecycle()
+    val transitionFor by vm.transitionFor.collectAsStateWithLifecycle()
+    val transitionMax by vm.transitionMaxMs.collectAsStateWithLifecycle()
 
     SideEffect { vm.onRequestAddMedia = onAddMedia }
-    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.player.pause(); vm.saveNow() }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.scrubStart(); vm.saveNow() }
+    val export by vm.exportState.collectAsStateWithLifecycle()
+    export?.let { ExportDialog(it, onCancel = vm::cancelExport, onDismiss = vm::dismissExport) }
     LaunchedEffect(event) { event?.let { Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show(); vm.events.value = null } }
     fun close() { vm.saveNow(); onClose() }
-    BackHandler { if (selected != null) vm.select(null) else close() }
+    BackHandler { if (transitionFor != null) vm.closeTransitions() else if (selected != null) vm.select(null) else close() }
 
     Column(Modifier.fillMaxSize().background(BaseColors.DarkBg).systemBarsPadding()) {
         // верхняя панель
@@ -116,14 +136,21 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
                 }
             }
             Spacer(Modifier.width(10.dp))
-            Text("Экспорт", Modifier.clip(RoundedCornerShape(12.dp)).background(BaseColors.Cyan).clickable { soon(ctx) }.padding(horizontal = 18.dp, vertical = 10.dp),
+            Text("Экспорт", Modifier.clip(RoundedCornerShape(12.dp)).background(BaseColors.Cyan).clickable { vm.startExport() }.padding(horizontal = 18.dp, vertical = 10.dp),
                 color = Color.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
         }
 
         // плеер
         Box(Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
             AndroidView(
-                factory = { c -> PlayerView(c).apply { useController = false; resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; player = vm.player; setShutterBackgroundColor(android.graphics.Color.BLACK) } },
+                factory = { c ->
+                    PlayerView(c).apply {
+                        useController = false
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        setShutterBackgroundColor(android.graphics.Color.BLACK)
+                        player = vm.controller.player
+                    }
+                },
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -143,7 +170,7 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
 
         // таймлайн
         Box(Modifier.fillMaxWidth().background(BaseColors.DarkBg)) {
-            TimelineView(clips, selected, playhead, total, zoom, vm, Modifier.fillMaxWidth())
+            TimelineView(clips, transitions, selected, playhead, total, zoom, vm, Modifier.fillMaxWidth())
             // кнопка «звук клипа» слева от нулевой отметки — уезжает вместе со шкалой
             val scrollPx = playhead * zoom * density.density / 1000f
             Column(
@@ -156,8 +183,16 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
             }
         }
 
-        // нижняя панель инструментов
-        Crossfade(selected != null, label = "toolbar", modifier = Modifier.fillMaxWidth().background(BaseColors.DarkPanel)) { hasSel ->
+        // нижняя панель: переходы / инструменты
+        val tf = transitionFor
+        if (tf != null) {
+            TransitionPanel(
+                current = vm.currentTransition(tf), maxMs = transitionMax, items = vm.catalog.items,
+                onPick = { id, dur -> vm.applyTransition(tf, id, dur) },
+                onDuration = { dur -> vm.currentTransition(tf)?.let { vm.applyTransition(tf, it.shaderId, dur) } },
+                onClose = vm::closeTransitions,
+            )
+        } else Crossfade(selected != null, label = "toolbar", modifier = Modifier.fillMaxWidth().background(BaseColors.DarkPanel)) { hasSel ->
             if (!hasSel) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     ToolButton(Icons.Rounded.ContentCut, "Изменить") { vm.selectAtPlayhead() }
@@ -190,4 +225,79 @@ private fun ToolButton(icon: ImageVector, label: String, onClick: () -> Unit) {
         Icon(icon, null, tint = Color.White, modifier = Modifier.size(26.dp))
         Text(label, color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
     }
+}
+
+@Composable
+private fun TransitionPanel(
+    current: com.base.editor.core.Transition?, maxMs: Long, items: List<com.base.editor.core.TransitionInfo>,
+    onPick: (String?, Long) -> Unit, onDuration: (Long) -> Unit, onClose: () -> Unit,
+) {
+    val minMs = 200L
+    val hi = maxMs.coerceAtLeast(minMs + 1).toFloat()
+    var dur by remember(current?.leftId, maxMs) { mutableStateOf((current?.durationMs ?: 500L).coerceIn(minMs, maxMs.coerceAtLeast(minMs)).toFloat()) }
+    Column(Modifier.fillMaxWidth().background(BaseColors.DarkPanel).padding(top = 8.dp, bottom = 10.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Переходы", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            RoundIcon(Icons.Rounded.Check, "Готово", onClose, size = 40.dp)
+        }
+        LazyRow(contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item {
+                TransitionTile("Нет", Icons.Rounded.Block, selected = current == null) { onPick(null, dur.toLong()) }
+            }
+            items(items, key = { it.id }) { t ->
+                TransitionTile(t.label, Icons.Rounded.AutoAwesome, selected = current?.shaderId == t.id) { onPick(t.id, dur.toLong()) }
+            }
+        }
+        if (current != null && maxMs > minMs) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Длительность", color = Color.White.copy(alpha = .7f), fontSize = 13.sp)
+                Slider(
+                    value = dur, onValueChange = { dur = it }, valueRange = minMs.toFloat()..hi,
+                    onValueChangeFinished = { onDuration(dur.toLong()) },
+                    colors = SliderDefaults.colors(thumbColor = BaseColors.Cyan, activeTrackColor = BaseColors.Cyan),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                )
+                Text("%.1f с".format(dur / 1000f), color = Color.White, fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransitionTile(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
+    Column(
+        Modifier.width(78.dp).clip(RoundedCornerShape(12.dp))
+            .border(BorderStroke(if (selected) 2.dp else 0.dp, if (selected) BaseColors.Cyan else Color.Transparent), RoundedCornerShape(12.dp))
+            .background(BaseColors.DarkSlot).clickable(onClick = onClick).padding(vertical = 10.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, null, tint = if (selected) BaseColors.Cyan else Color.White, modifier = Modifier.size(26.dp))
+        Text(label, color = Color.White, fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 2, minLines = 2, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+@Composable
+private fun ExportDialog(state: ExportState, onCancel: () -> Unit, onDismiss: () -> Unit) {
+    val finished = state is ExportState.Done || state is ExportState.Failed
+    AlertDialog(
+        onDismissRequest = { if (finished) onDismiss() },
+        containerColor = BaseColors.DarkPanel,
+        title = { Text(when (state) { is ExportState.Done -> "Готово"; is ExportState.Failed -> "Ошибка экспорта"; else -> "Экспорт видео" }, color = Color.White) },
+        text = {
+            Column {
+                when (state) {
+                    ExportState.Preparing -> { Text("Подготовка…", color = Color.White.copy(alpha = .8f)); LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 12.dp), color = BaseColors.Cyan) }
+                    is ExportState.Progress -> {
+                        Text("${state.percent}%" + if (state.attempt > 0) " (упрощённый режим)" else "", color = Color.White.copy(alpha = .8f))
+                        LinearProgressIndicator(progress = { state.percent / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), color = BaseColors.Cyan)
+                    }
+                    is ExportState.Retrying -> Text("Устройство не справилось с первой попыткой — повторяем без эффектов и с меньшим разрешением.", color = Color.White.copy(alpha = .8f))
+                    is ExportState.Done -> Text("Видео сохранено в галерею: Movies/BASE.", color = Color.White.copy(alpha = .8f))
+                    is ExportState.Failed -> Text(state.message, color = Color.White.copy(alpha = .8f))
+                }
+            }
+        },
+        confirmButton = { if (finished) TextButton(onDismiss) { Text("OK", color = BaseColors.Cyan) } },
+        dismissButton = { if (!finished) TextButton(onCancel) { Text("Отмена", color = Color.White) } },
+    )
 }

@@ -1,0 +1,8 @@
+BASE — уведомления о сторонних компонентах
+
+1) AndroidX Media3 (Transformer, Effect, ExoPlayer, UI) — Apache License 2.0.
+   Подключается как Maven-зависимость; текст лицензии: https://www.apache.org/licenses/LICENSE-2.0
+
+2) Шейдеры переходов (app/src/main/assets/shaders/transitions) — MIT License.
+   Полный текст — licenses/transition-shaders-LICENSE.txt. Заголовки авторов внутри каждого .glsl
+   сохранены и должны оставаться при любых изменениях/распространении.

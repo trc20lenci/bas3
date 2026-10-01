@@ -19,6 +19,12 @@ data class Clip(
     val lengthMs get() = endMs - startMs
 }
 
+/**
+ * Переход «в» клип rightId на стыке с левым соседом leftId.
+ * Занимает первые durationMs входящего клипа: уходящий клип в этот момент показан последним кадром.
+ */
+data class Transition(val leftId: Long, val rightId: Long, val shaderId: String, val durationMs: Long)
+
 /** Файл, выбранный в галерее. */
 data class PickedMedia(val uri: String, val type: MediaType, val durationMs: Long) {
     fun encode() = "${type.code}|$durationMs|$uri"

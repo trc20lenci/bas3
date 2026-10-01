@@ -68,3 +68,21 @@ object Thumbs {
         }.getOrNull()
     }
 }
+
+/** Размер кадра с учётом поворота — по нему выбираем пропорции окна превью. */
+object MediaProbe {
+    fun displaySize(ctx: Context, uri: String, type: MediaType): Pair<Int, Int>? = runCatching {
+        if (type == MediaType.VIDEO) {
+            val r = MediaMetadataRetriever().apply { setDataSource(ctx, Uri.parse(uri)) }
+            val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)!!.toInt()
+            val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)!!.toInt()
+            val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            r.release()
+            if (rot % 180 == 90) h to w else w to h
+        } else {
+            val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            ctx.contentResolver.openInputStream(Uri.parse(uri))?.use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+            o.outWidth to o.outHeight
+        }
+    }.getOrNull()?.takeIf { it.first > 0 && it.second > 0 }
+}

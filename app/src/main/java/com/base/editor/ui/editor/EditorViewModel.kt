@@ -4,24 +4,34 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
-import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.common.util.UnstableApi
 import com.base.editor.core.Clip
-import com.base.editor.core.IMAGE_DEFAULT_MS
-import com.base.editor.core.MediaType
-import com.base.editor.core.NativeTimeline
 import com.base.editor.core.PickedMedia
+import com.base.editor.core.Transition
+import com.base.editor.core.TransitionCatalog
+import com.base.editor.data.MediaProbe
 import com.base.editor.data.ProjectRepository
+import com.base.editor.media.AppDispatchers
+import com.base.editor.media.CompositionFactory
+import com.base.editor.media.ExportQuality
+import com.base.editor.media.ExportRequest
+import com.base.editor.media.ExportState
+import com.base.editor.media.TimelineController
+import com.base.editor.media.VideoExportManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Действия, которые жесты таймлайна вызывают у ViewModel. */
 interface TimelineActions {
@@ -37,192 +47,159 @@ interface TimelineActions {
     fun addMedia()
     fun addAudio()
     fun addText()
+    fun openTransitions(leftId: Long)
 }
 
+@OptIn(FlowPreview::class)
+@UnstableApi
 class EditorViewModel(app: Application, private val handle: SavedStateHandle) : AndroidViewModel(app), TimelineActions {
     private val projectId: String = checkNotNull(handle["projectId"])
     private val repo = ProjectRepository.get(app)
-    private val engine = NativeTimeline()
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val dispatchers = AppDispatchers()
+    private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    val player: ExoPlayer = ExoPlayer.Builder(app).build()
+    val catalog = TransitionCatalog(app)
+    val controller = TimelineController(app, viewModelScope, catalog, dispatchers)
+    private val exporter = VideoExportManager(app, CompositionFactory(app, catalog), dispatchers)
 
-    private val _clips = MutableStateFlow<List<Clip>>(emptyList())
-    val clips: StateFlow<List<Clip>> = _clips
+    // состояние таймлайна — прямо из контроллера
+    val clips: StateFlow<List<Clip>> = controller.state.map { it.clips }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val transitions: StateFlow<List<Transition>> = controller.state.map { it.transitions }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val totalMs: StateFlow<Long> = controller.state.map { it.totalMs }.stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
+    val playheadMs = controller.playheadMs
+    val isPlaying = controller.isPlaying
+    val canUndo = controller.canUndo
+    val canRedo = controller.canRedo
+
+    // состояние интерфейса
     val selectedId = MutableStateFlow<Long?>(null)
-    val playheadMs = MutableStateFlow(0L)
-    val totalMs = MutableStateFlow(0L)
-    val isPlaying = MutableStateFlow(false)
-    val canUndo = MutableStateFlow(false)
-    val canRedo = MutableStateFlow(false)
-    val pxPerSec = MutableStateFlow(60f)          // масштаб: dp на секунду
-    val resolution = MutableStateFlow("1080p")
+    val pxPerSec = MutableStateFlow(60f)                  // масштаб: dp на секунду
+    val resolution = MutableStateFlow("720p")
     val muted = MutableStateFlow(false)
-    val loaded = MutableStateFlow(false)
-    val events = MutableStateFlow<String?>(null)  // одноразовые сообщения для Toast
+    val events = MutableStateFlow<String?>(null)          // одноразовые сообщения для Toast
+    val transitionFor = MutableStateFlow<Long?>(null)     // стык, для которого открыта панель переходов
+    val transitionMaxMs = MutableStateFlow(0L)
+    val exportState = MutableStateFlow<ExportState?>(null)
 
-    /** Клипы основной дорожки в порядке воспроизведения (соответствуют элементам плейлиста). */
-    private var playlist: List<Clip> = emptyList()
-    private var saveJob: Job? = null
+    var onRequestAddMedia: (() -> Unit)? = null
+    private var aspect = 9f / 16f
+    private var exportJob: Job? = null
 
     init {
         viewModelScope.launch {
-            repo.loadTimeline(projectId)?.let { engine.load(it) }
-            refresh(); rebuildPlaylist(); loaded.value = true
+            val saved = repo.loadTimeline(projectId)
+            controller.load(saved)
+            withContext(dispatchers.default) { detectAspect() }      // чтение метаданных — не на главном потоке
+            applyCanvas()
         }
-        // Результат экрана «добавить медиа» приходит через SavedStateHandle
+        viewModelScope.launch { controller.events.collect { events.value = it } }
+        viewModelScope.launch { controller.committed.debounce(600).collect { persist() } }
+        // результат экрана «добавить медиа» приходит через SavedStateHandle
         viewModelScope.launch {
             handle.getStateFlow<ArrayList<String>?>("added", null).filterNotNull().collect { list ->
                 handle["added"] = null
-                appendMedia(list.map(PickedMedia::decode))
+                controller.addMedia(list.map(PickedMedia::decode))
             }
         }
-        player.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(playing: Boolean) { isPlaying.value = playing }
-            override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_ENDED) { player.pause(); playheadMs.value = totalMs.value }
+        // выбранный клип / панель переходов не должны ссылаться на исчезнувшие клипы
+        viewModelScope.launch {
+            controller.state.collect { s ->
+                if (selectedId.value != null && s.clips.none { it.id == selectedId.value }) selectedId.value = null
+                transitionFor.value?.let { id ->
+                    val max = controller.maxTransitionMs(id)
+                    if (s.clips.none { it.id == id } || max <= 0) transitionFor.value = null else transitionMaxMs.value = max
+                }
             }
-        })
-        viewModelScope.launch {   // синхронизация плейхеда с плеером во время воспроизведения
-            while (true) { delay(33); if (player.isPlaying) syncPlayhead() }
         }
     }
 
-    // ---------- состояние ----------
-    private fun refresh() {
-        _clips.value = engine.clips()
-        totalMs.value = engine.totalMs
-        canUndo.value = engine.canUndo
-        canRedo.value = engine.canRedo
-        if (selectedId.value != null && _clips.value.none { it.id == selectedId.value }) selectedId.value = null
-        playheadMs.value = playheadMs.value.coerceIn(0, totalMs.value)
+    // ───────── проект ─────────
+    private suspend fun detectAspect() {
+        val first = controller.state.value.clips.filter { it.row == 0 }.minByOrNull { it.startMs } ?: return
+        MediaProbe.displaySize(getApplication(), first.uri, first.type)?.let { (w, h) -> aspect = w.toFloat() / h }
     }
 
-    private fun scheduleSave() {
-        saveJob?.cancel()
-        saveJob = viewModelScope.launch { delay(600); persist() }
-    }
+    private fun shortSide() = when (resolution.value) { "480p" -> 480; "1080p" -> 1080; else -> 720 }
+    private fun applyCanvas() = controller.setCanvas(CompositionFactory.canvasFor(aspect, shortSide()))
+    fun setResolution(r: String) { resolution.value = r; applyCanvas() }
 
     private fun persist() {
-        val data = engine.serialize(); val clips = engine.clips()
-        appScope.launch { repo.save(projectId, data, clips) }
+        val data = controller.serialize(); val clips = controller.state.value.clips
+        persistScope.launch { repo.save(projectId, data, clips) }
     }
+    fun saveNow() = persist()
 
-    fun saveNow() { saveJob?.cancel(); persist() }
+    // ───────── воспроизведение ─────────
+    fun togglePlay() = controller.toggle()
+    fun toggleMute() { muted.value = !muted.value; controller.setMuted(muted.value) }
+    fun undo() = controller.undo()
+    fun redo() = controller.redo()
 
-    // ---------- плеер ----------
-    private fun mediaItem(c: Clip): MediaItem {
-        val b = MediaItem.Builder().setUri(c.uri)
-        if (c.type == MediaType.IMAGE) {
-            getApplication<Application>().contentResolver.getType(android.net.Uri.parse(c.uri))?.let { b.setMimeType(it) }
-            b.setImageDurationMs(c.lengthMs)
-        } else {
-            b.setClippingConfiguration(
-                MediaItem.ClippingConfiguration.Builder().setStartPositionMs(c.srcInMs).setEndPositionMs(c.srcInMs + c.lengthMs).build()
-            )
-        }
-        return b.build()
-    }
-
-    private fun locate(t: Long): Pair<Int, Long> {
-        if (playlist.isEmpty()) return 0 to 0L
-        val i = playlist.indexOfFirst { t >= it.startMs && t < it.endMs }
-        if (i >= 0) return i to (t - playlist[i].startMs)
-        val next = playlist.indexOfFirst { it.startMs > t }          // попали в пустоту
-        return if (next >= 0) next to 0L else playlist.lastIndex to (playlist.last().lengthMs - 1).coerceAtLeast(0)
-    }
-
-    /** Полная пересборка плейлиста — после структурных правок (не на каждом кадре жеста). */
-    private fun rebuildPlaylist() {
-        playlist = _clips.value.filter { it.row == 0 }.sortedBy { it.startMs }
-        if (playlist.isEmpty()) { player.clearMediaItems(); return }
-        val (idx, off) = locate(playheadMs.value)
-        player.setMediaItems(playlist.map(::mediaItem), idx, off)
-        player.prepare()
-    }
-
-    private fun syncPlayhead() {
-        val i = player.currentMediaItemIndex
-        if (i in playlist.indices) playheadMs.value = playlist[i].startMs + player.currentPosition
-    }
-
-    fun togglePlay() {
-        if (player.isPlaying) { player.pause(); return }
-        if (playlist.isEmpty()) return
-        if (playheadMs.value >= totalMs.value - 50) { playheadMs.value = 0; seekPlayer(0) }
-        player.play()
-    }
-
-    private fun seekPlayer(ms: Long) {
-        if (playlist.isEmpty()) return
-        val (i, off) = locate(ms)
-        player.seekTo(i, off)
-    }
-
-    fun toggleMute() { muted.value = !muted.value; player.volume = if (muted.value) 0f else 1f }
-    fun setResolution(r: String) { resolution.value = r }   // пригодится экспорту; превью не меняет
-
-    // ---------- TimelineActions ----------
-    override fun scrubStart() { player.pause() }
-    override fun scrubTo(ms: Long) {
-        val v = ms.coerceIn(0, totalMs.value)
-        if (v == playheadMs.value) return
-        playheadMs.value = v; seekPlayer(v)
-    }
+    // ───────── TimelineActions ─────────
+    override fun scrubStart() = controller.pause()
+    override fun scrubTo(ms: Long) = controller.seekTo(ms)
     override fun select(id: Long?) { selectedId.value = id }
-    override fun editBegin() { player.pause(); engine.checkpoint() }
-
-    override fun moveClip(id: Long, startMs: Long) {
-        val thr = (8f / pxPerSec.value * 1000).toLong()
-        engine.move(id, startMs, thr, playheadMs.value)
-        refresh()
-    }
-    override fun trimStart(id: Long, ms: Long) { engine.trimStart(id, ms); refresh() }
-    override fun trimEnd(id: Long, ms: Long) { engine.trimEnd(id, ms); refresh() }
-    override fun editEnd() { engine.discardIfNoop(); refresh(); rebuildPlaylist(); scheduleSave() }
-
+    override fun editBegin() = controller.beginEdit()
+    override fun moveClip(id: Long, startMs: Long) = controller.move(id, startMs, (8f / pxPerSec.value * 1000).toLong())
+    override fun trimStart(id: Long, ms: Long) = controller.trimStart(id, ms)
+    override fun trimEnd(id: Long, ms: Long) = controller.trimEnd(id, ms)
+    override fun editEnd() = controller.commitEdit()
     override fun setZoom(pxPerSecDp: Float) { pxPerSec.value = pxPerSecDp.coerceIn(12f, 400f) }
-    override fun addMedia() { player.pause(); onRequestAddMedia?.invoke() }
+    override fun addMedia() { controller.pause(); onRequestAddMedia?.invoke() }
     override fun addAudio() { events.value = "Аудиодорожка появится на следующем этапе" }
     override fun addText() { events.value = "Текстовые слои появятся на следующем этапе" }
-    var onRequestAddMedia: (() -> Unit)? = null
 
-    // ---------- операции над выбранным клипом ----------
     fun split() {
         val id = selectedId.value ?: return
-        engine.checkpoint()
-        if (engine.split(id, playheadMs.value) < 0) { engine.discardIfNoop(); events.value = "Поставьте курсор внутрь клипа" ; return }
-        refresh(); rebuildPlaylist(); scheduleSave()
+        if (!controller.split(id)) events.value = "Поставьте курсор внутрь клипа"
     }
 
-    fun deleteSelected() {
-        val id = selectedId.value ?: return
-        engine.checkpoint(); engine.remove(id); selectedId.value = null
-        refresh(); rebuildPlaylist(); scheduleSave()
-    }
+    fun deleteSelected() { selectedId.value?.let { controller.remove(it); selectedId.value = null } }
 
     fun selectAtPlayhead() {
-        selectedId.value = _clips.value.firstOrNull { it.row == 0 && playheadMs.value >= it.startMs && playheadMs.value < it.endMs }?.id
+        val t = playheadMs.value
+        selectedId.value = clips.value.firstOrNull { it.row == 0 && t >= it.startMs && t < it.endMs }?.id
     }
 
-    fun undo() { if (engine.undo()) { refresh(); rebuildPlaylist(); scheduleSave() } }
-    fun redo() { if (engine.redo()) { refresh(); rebuildPlaylist(); scheduleSave() } }
+    // ───────── переходы ─────────
+    override fun openTransitions(leftId: Long) {
+        controller.pause()
+        selectedId.value = null
+        transitionMaxMs.value = controller.maxTransitionMs(leftId)
+        transitionFor.value = leftId
+        clips.value.firstOrNull { it.id == leftId }?.let { controller.seekTo(it.endMs) }   // курсор на стык
+    }
 
-    private fun appendMedia(items: List<PickedMedia>) {
-        if (items.isEmpty()) return
-        engine.checkpoint()
-        val firstStart = engine.totalMs
-        items.forEach { m ->
-            val video = m.type == MediaType.VIDEO
-            engine.addClip(0, m.type, m.uri, if (video) m.durationMs else 0, if (video) m.durationMs else IMAGE_DEFAULT_MS)
+    fun closeTransitions() { transitionFor.value = null }
+    fun currentTransition(leftId: Long): Transition? = transitions.value.firstOrNull { it.leftId == leftId }
+
+    /** shaderId == null — убрать переход. Сразу проигрывает окно перехода в плеере. */
+    fun applyTransition(leftId: Long, shaderId: String?, durationMs: Long) {
+        if (controller.setTransition(leftId, shaderId, durationMs) && shaderId != null) controller.previewTransition(leftId)
+    }
+
+    // ───────── экспорт ─────────
+    fun startExport(quality: ExportQuality = ExportQuality.P1080) {
+        if (exportJob?.isActive == true) return
+        controller.pause()
+        val request = ExportRequest(controller.state.value, aspect, quality, removeAudio = muted.value)
+        exportJob = viewModelScope.launch {
+            exporter.export(request).collect { s ->
+                exportState.value = s
+                if (s is ExportState.Done) {
+                    runCatching { exporter.saveToGallery(s.file) }
+                        .onFailure { exportState.value = ExportState.Failed("Не удалось сохранить в галерею", it) }
+                        .onSuccess { events.value = "Видео сохранено в Movies/BASE" }
+                }
+            }
         }
-        refresh(); rebuildPlaylist(); scheduleSave()
-        playheadMs.value = firstStart; seekPlayer(firstStart)
     }
+
+    fun cancelExport() { exportJob?.cancel(); exportState.value = null }
+    fun dismissExport() { exportState.value = null }
 
     override fun onCleared() {
         persist()
-        player.release()
-        engine.close()
+        controller.release()
     }
 }
