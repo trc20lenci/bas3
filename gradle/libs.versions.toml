@@ -1,7 +1,7 @@
 # Версии консервативные — при желании просто поднимите до актуальных.
 [versions]
 agp = "8.9.2"
-kotlin = "2.0.21"
+kotlin = "2.2.20"
 composeBom = "2024.12.01"
 activityCompose = "1.9.3"
 navigation = "2.8.5"
