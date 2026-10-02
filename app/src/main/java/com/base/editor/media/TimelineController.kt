@@ -1,6 +1,7 @@
 package com.base.editor.media
 
 import android.content.Context
+import android.os.Looper
 import android.util.Log
 import android.util.Size
 import androidx.media3.common.PlaybackException
@@ -14,6 +15,7 @@ import com.base.editor.core.PickedMedia
 import com.base.editor.core.TransitionCatalog
 import com.base.editor.domain.TimelineModel
 import com.base.editor.domain.TimelineState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -77,12 +79,21 @@ class TimelineController(
     init {
         scope.launch(dispatchers.default) {                 // конвейер пересборки
             for (ignored in rebuildRequests) {
-                val snapshot = _state.value
-                val request = CompositionRequest(snapshot, canvas, safeMode = safeMode, onTransitionFallback = { _events.tryEmit(it) })
-                val composition = runCatching { factory.build(request) }
-                    .onFailure { Log.e(TAG, "не удалось собрать композицию", it); _events.tryEmit("Не удалось подготовить предпросмотр") }
-                    .getOrNull()
-                withContext(dispatchers.main) { applyComposition(composition) }
+                try {
+                    val snapshot = _state.value
+                    val request = CompositionRequest(snapshot, canvas, safeMode = safeMode, onTransitionFallback = { _events.tryEmit(it) })
+                    val composition = runCatching { factory.build(request) }
+                        .onFailure { Log.e(TAG, "не удалось собрать композицию", it); _events.tryEmit("Не удалось подготовить предпросмотр") }
+                        .getOrNull()
+                    // Плеер Media3 — строго главный поток
+                    withContext(dispatchers.main) { applyComposition(composition) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // один сбой не должен убивать ни приложение, ни сам конвейер пересборки
+                    Log.e(TAG, "сбой пересборки", e)
+                    _events.tryEmit("Не удалось подготовить предпросмотр")
+                }
             }
         }
         scope.launch {                                      // опрос позиции только пока играет
@@ -209,10 +220,18 @@ class TimelineController(
 
     private fun requestRebuild() { rebuildRequests.trySend(Unit) }
 
+    /** Только главный поток. Никогда не бросает: повреждённый файл даёт сообщение, а не падение процесса. */
     private fun applyComposition(composition: Composition?) {
-        if (composition == null) { player.stop(); return }
-        player.setComposition(composition, _playhead.value)
-        player.prepare()
+        check(Looper.myLooper() == Looper.getMainLooper()) { "Плеер можно трогать только с главного потока" }
+        try {
+            if (composition == null) { player.stop(); return }
+            player.setComposition(composition, _playhead.value)
+            player.prepare()
+        } catch (e: Exception) {
+            Log.e(TAG, "setComposition не удался", e)
+            _events.tryEmit("Не удалось открыть файл: возможно, он повреждён или не поддерживается")
+            runCatching { player.stop() }
+        }
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) { _playing.value = isPlaying }

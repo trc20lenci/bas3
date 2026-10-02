@@ -20,6 +20,7 @@ import com.base.editor.domain.TimelineState
 import com.base.editor.media.gl.TailCaptureEffect
 import com.base.editor.media.gl.TransitionBridge
 import com.base.editor.media.gl.TransitionEffect
+import kotlin.math.max
 
 /** Параметры сборки одной композиции. */
 data class CompositionRequest(
@@ -96,7 +97,10 @@ class CompositionFactory(private val context: Context, private val catalog: Tran
                     .setEndPositionMs(c.srcInMs + c.lengthMs)
                     .build(),
             )
-            edited = EditedMediaItem.Builder(item.build())
+            // CompositionPlayer не читает длительность из файла: ему нужна ПОЛНАЯ длительность исходника
+            // заранее (из неё он сам вычитает обрезку). Без этого — IllegalStateException в setComposition.
+            val sourceMs = max(c.srcDurMs, c.srcInMs + c.lengthMs)
+            edited = EditedMediaItem.Builder(item.build()).setDurationUs(sourceMs * 1000).setFrameRate(FRAME_RATE)
         }
         return edited.setEffects(Effects(emptyList(), videoEffects)).setRemoveAudio(removeAudio).build()
     }
