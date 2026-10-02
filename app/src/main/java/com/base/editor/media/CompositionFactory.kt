@@ -7,6 +7,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
@@ -29,6 +30,8 @@ data class CompositionRequest(
     /** true — без шейдерных эффектов (аварийный режим после сбоя декодера/GL). */
     val safeMode: Boolean = false,
     val onTransitionFallback: (String) -> Unit = {},
+    /** Субтитры «вжигаются» только в экспорт; в превью их рисует Compose-оверлей. */
+    val captions: CaptionTrack? = null,
 )
 
 /**
@@ -71,7 +74,13 @@ class CompositionFactory(private val context: Context, private val catalog: Tran
             seq.addItem(editedItem(clip, effects, req.removeAudio))
             cursorMs = clip.endMs
         }
-        return Composition.Builder(seq.build()).build()
+        val builder = Composition.Builder(seq.build())
+        req.captions?.takeIf { it.items.isNotEmpty() }?.let { track ->
+            // эффект уровня композиции: время кадров — время всего проекта, субтитры совпадают с таймлайном
+            val overlay = CaptionBitmapOverlay(context, track, req.canvas)
+            builder.setEffects(Effects(emptyList(), listOf(OverlayEffect(listOf(overlay)))))
+        }
+        return builder.build()
     }
 
     private fun editedItem(c: Clip, videoEffects: List<Effect>, removeAudio: Boolean): EditedMediaItem {

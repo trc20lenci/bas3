@@ -85,6 +85,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.TextButton
 import com.base.editor.media.ExportState
 import com.base.editor.R
+import com.base.editor.captions.CaptionOps
+import androidx.compose.material.icons.rounded.ClosedCaption
 import com.base.editor.data.Format
 import com.base.editor.ui.theme.BaseColors
 import com.base.editor.ui.theme.soon
@@ -109,6 +111,11 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
     val transitions by vm.transitions.collectAsStateWithLifecycle()
     val transitionFor by vm.transitionFor.collectAsStateWithLifecycle()
     val transitionMax by vm.transitionMaxMs.collectAsStateWithLifecycle()
+    val captionItems by vm.captions.items.collectAsStateWithLifecycle()
+    val captionStyle by vm.captions.style.collectAsStateWithLifecycle()
+    val captionGen by vm.captions.generation.collectAsStateWithLifecycle()
+    val captionPanel by vm.captionPanelOpen.collectAsStateWithLifecycle()
+    val editingCaption by vm.editingCaptionId.collectAsStateWithLifecycle()
 
     SideEffect { vm.onRequestAddMedia = onAddMedia }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.scrubStart(); vm.saveNow() }
@@ -116,7 +123,7 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
     export?.let { ExportDialog(it, onCancel = vm::cancelExport, onDismiss = vm::dismissExport) }
     LaunchedEffect(event) { event?.let { Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show(); vm.events.value = null } }
     fun close() { vm.saveNow(); onClose() }
-    BackHandler { if (transitionFor != null) vm.closeTransitions() else if (selected != null) vm.select(null) else close() }
+    BackHandler { if (captionPanel) vm.closeCaptions() else if (transitionFor != null) vm.closeTransitions() else if (selected != null) vm.select(null) else close() }
 
     Column(Modifier.fillMaxSize().background(BaseColors.DarkBg).systemBarsPadding()) {
         // верхняя панель
@@ -153,6 +160,7 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
                 },
                 modifier = Modifier.fillMaxSize(),
             )
+            CaptionOverlay(CaptionOps.captionAt(captionItems, playhead), captionStyle, playhead, vm.videoAspect)
         }
 
         // время / play / undo-redo
@@ -170,7 +178,7 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
 
         // таймлайн
         Box(Modifier.fillMaxWidth().background(BaseColors.DarkBg)) {
-            TimelineView(clips, transitions, selected, playhead, total, zoom, vm, Modifier.fillMaxWidth())
+            TimelineView(clips, transitions, captionItems, selected, playhead, total, zoom, vm, Modifier.fillMaxWidth())
             // кнопка «звук клипа» слева от нулевой отметки — уезжает вместе со шкалой
             val scrollPx = playhead * zoom * density.density / 1000f
             Column(
@@ -185,7 +193,17 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
 
         // нижняя панель: переходы / инструменты
         val tf = transitionFor
-        if (tf != null) {
+        if (captionPanel) {
+            CaptionPanel(
+                items = captionItems, style = captionStyle, generation = captionGen, playheadMs = playhead,
+                modelReady = vm.captions::isModelReady, editingId = editingCaption,
+                onGenerate = vm::generateCaptions, onCancel = vm.captions::cancelGeneration, onDismissError = vm.captions::dismissError,
+                onOpenItem = vm::openCaptionItem, onCloseEdit = { vm.editingCaptionId.value = null },
+                onUpdateText = vm.captions::updateText, onUpdateTiming = vm.captions::updateTiming, onDelete = vm.captions::delete,
+                onAdd = vm::addCaptionHere, onClearAll = vm.captions::clearAll,
+                onPreset = vm.captions::applyPreset, onStyle = vm.captions::updateStyle, onClose = vm::closeCaptions,
+            )
+        } else if (tf != null) {
             TransitionPanel(
                 current = vm.currentTransition(tf), maxMs = transitionMax, items = vm.catalog.items,
                 onPick = { id, dur -> vm.applyTransition(tf, id, dur) },
@@ -198,6 +216,7 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
                     ToolButton(Icons.Rounded.ContentCut, "Изменить") { vm.selectAtPlayhead() }
                     ToolButton(Icons.Rounded.MusicNote, "Звук") { soon(ctx) }
                     ToolButton(Icons.Rounded.TextFields, "Текст") { soon(ctx) }
+                    ToolButton(Icons.Rounded.ClosedCaption, "Субтитры", onClick = vm::openCaptions)
                     ToolButton(Icons.Rounded.Layers, "Наложение") { soon(ctx) }
                 }
             } else {
@@ -221,7 +240,7 @@ private fun RoundIcon(icon: ImageVector, desc: String, onClick: () -> Unit, size
 
 @Composable
 private fun ToolButton(icon: ImageVector, label: String, onClick: () -> Unit) {
-    Column(Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(horizontal = 9.dp, vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(icon, null, tint = Color.White, modifier = Modifier.size(26.dp))
         Text(label, color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
     }

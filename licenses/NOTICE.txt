@@ -6,3 +6,12 @@ BASE — уведомления о сторонних компонентах
 2) Шейдеры переходов (app/src/main/assets/shaders/transitions) — MIT License.
    Полный текст — licenses/transition-shaders-LICENSE.txt. Заголовки авторов внутри каждого .glsl
    сохранены и должны оставаться при любых изменениях/распространении.
+
+3) Шрифты субтитров (app/src/main/res/font): Montserrat, Oswald, Rubik, Russo One, Pacifico —
+   SIL Open Font License 1.1. Тексты лицензий: licenses/OFL-*.txt.
+
+4) Распознавание речи — Vosk (Apache License 2.0) и компактные офлайн-модели (Apache License 2.0),
+   скачиваются при первом использовании автосубтитров.
+
+5) Набор готовых стилей субтитров вдохновлён открытым проектом генерации субтитров (MIT License);
+   реализация и значения параметров написаны для BASE заново.

@@ -38,6 +38,7 @@ data class ExportRequest(
     val quality: ExportQuality = ExportQuality.P1080,
     val hevc: Boolean = false,
     val removeAudio: Boolean = false,
+    val captions: CaptionTrack? = null,
 )
 
 sealed interface ExportState {
@@ -77,7 +78,7 @@ class VideoExportManager(
             val canvas = CompositionFactory.canvasFor(req.aspect, (req.quality.shortSide * scale).toInt())
             val output = outputFile()
             val composition: Composition? = runCatching {
-                factory.build(CompositionRequest(req.state, canvas, req.removeAudio, safeMode = simple))
+                factory.build(CompositionRequest(req.state, canvas, req.removeAudio, safeMode = simple, captions = req.captions))
             }.getOrNull()
             if (composition == null) { trySend(ExportState.Failed("Нет клипов для экспорта")); close(); return }
 

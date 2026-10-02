@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -33,7 +34,12 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.unit.Constraints
+import android.util.Log
+import com.base.editor.captions.CaptionItem
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
@@ -63,7 +69,7 @@ import kotlin.math.roundToInt
  */
 @Composable
 fun TimelineView(
-    clips: List<Clip>, transitions: List<Transition>, selectedId: Long?, playheadMs: Long, totalMs: Long, pxPerSecDp: Float,
+    clips: List<Clip>, transitions: List<Transition>, captions: List<CaptionItem>, selectedId: Long?, playheadMs: Long, totalMs: Long, pxPerSecDp: Float,
     actions: TimelineActions, modifier: Modifier = Modifier,
 ) {
     val ctx = LocalContext.current
@@ -74,7 +80,7 @@ fun TimelineView(
     var tick by remember { mutableIntStateOf(0) }          // перерисовка после подгрузки миниатюр
 
     val geo = Geo(density, widthPx.toFloat(), playheadMs, pxPerSecDp)
-    val cur by rememberUpdatedState(TlState(geo, clips, transitions, selectedId, totalMs))
+    val cur by rememberUpdatedState(TlState(geo, clips, transitions, captions, selectedId, totalMs))
     val act by rememberUpdatedState(actions)
 
     // Очередь миниатюр: draw только регистрирует недостающие ключи, загрузка — здесь.
@@ -157,6 +163,7 @@ fun TimelineView(
                             is Hit.Handle -> act.select(hit.clip.id)
                             is Hit.Junction -> act.openTransitions(hit.leftId)
                             Hit.Plus -> act.addMedia()
+                            is Hit.Caption -> act.openCaption(hit.id)
                             Hit.AudioSlot -> act.addAudio()
                             Hit.TextSlot -> act.addText()
                             Hit.None -> act.select(null)
@@ -174,7 +181,8 @@ fun TimelineView(
             },
     ) {
         tick.let { }                     // подписка на перерисовку
-        drawTimeline(cur, measurer, pending)
+        // zero-crash: ошибка отрисовки не должна ронять приложение при любых зумах/скроллах
+        try { drawTimeline(cur, measurer, pending) } catch (e: Exception) { Log.e("BaseTimeline", "drawTimeline", e) }
     }
 }
 
@@ -189,6 +197,7 @@ private sealed interface Hit {
     class Handle(val clip: Clip, val start: Boolean) : Hit
     class Junction(val leftId: Long) : Hit
     data object Plus : Hit
+    class Caption(val id: String) : Hit
     data object AudioSlot : Hit
     data object TextSlot : Hit
     data object None : Hit
@@ -207,7 +216,7 @@ class Geo(private val d: Density, val width: Float, val playheadMs: Long, val px
     val total: Float get() = textTop + slotH
 }
 
-private class TlState(val geo: Geo, val clips: List<Clip>, val transitions: List<Transition>, val selectedId: Long?, val totalMs: Long) {
+private class TlState(val geo: Geo, val clips: List<Clip>, val transitions: List<Transition>, val captions: List<CaptionItem>, val selectedId: Long?, val totalMs: Long) {
     /** Стыки соседних клипов основной дорожки: (левый клип, правый клип). Кнопки скрыты у выбранного клипа. */
     fun junctions(): List<Pair<Clip, Clip>> {
         val main = clips.filter { it.row == 0 }
@@ -236,14 +245,17 @@ private class TlState(val geo: Geo, val clips: List<Clip>, val transitions: List
             if (p.x in plusL..(plusL + g.plusSize + g.handleSlop)) return Hit.Plus
         }
         if (p.y in g.audioTop..(g.audioTop + g.slotH) && p.x >= g.x(0)) return Hit.AudioSlot
-        if (p.y in g.textTop..(g.textTop + g.slotH) && p.x >= g.x(0)) return Hit.TextSlot
+        if (p.y in g.textTop..(g.textTop + g.slotH)) {
+            captions.firstOrNull { p.x in g.x(it.startMs)..g.x(it.endMs) }?.let { return Hit.Caption(it.id) }
+            if (p.x >= g.x(0)) return Hit.TextSlot
+        }
         return Hit.None
     }
 }
 
 // ───────────────────────── отрисовка ─────────────────────────
 
-private fun DrawScope.drawTimeline(s: TlState, measurer: androidx.compose.ui.text.TextMeasurer, pending: LinkedHashMap<String, ThumbReq>) {
+private fun DrawScope.drawTimeline(s: TlState, measurer: TextMeasurer, pending: LinkedHashMap<String, ThumbReq>) {
     val g = s.geo
     if (g.width <= 0f) return
     val small = TextStyle(color = Color.White.copy(alpha = .6f), fontSize = 11.sp)
@@ -254,11 +266,12 @@ private fun DrawScope.drawTimeline(s: TlState, measurer: androidx.compose.ui.tex
     val stepMs = (stepSec * 1000).toLong()
     val firstT = max(0L, ((g.playheadMs - (g.centerX / g.pxPerMs).toLong()) / stepMs) * stepMs)
     var t = firstT
-    while (g.x(t) < g.width + 60f) {
+    var guard = 0
+    while (g.x(t) < g.width + 60f && guard++ < 600) {
         val x = g.x(t)
         if (x > -60f) {
             val label = Format.duration(t)
-            drawText(measurer, label, Offset(x - 16.dp.toPx(), 2.dp.toPx()), small)
+            safeText(measurer, label, Offset(x - 16.dp.toPx(), 2.dp.toPx()), small)
             drawCircle(Color.White.copy(alpha = .35f), 1.5.dp.toPx(), Offset(g.x(t + stepMs / 2), 22.dp.toPx()))
         }
         t += stepMs
@@ -268,7 +281,22 @@ private fun DrawScope.drawTimeline(s: TlState, measurer: androidx.compose.ui.tex
     val slotFrom = g.x(0)
     listOf(g.audioTop to "+  Добавить аудио", g.textTop to "+  Добавить текст").forEach { (top, label) ->
         drawRoundRect(BaseColors.DarkSlot, Offset(max(slotFrom, -g.corner), top), Size(g.width - max(slotFrom, -g.corner) + g.corner, g.slotH), CornerRadius(g.corner))
-        drawText(measurer, label, Offset(max(slotFrom, 0f) + 16.dp.toPx(), top + 13.dp.toPx()), TextStyle(color = Color.White.copy(alpha = .85f), fontSize = 15.sp))
+        val isText = top == g.textTop
+        if (!(isText && s.captions.isNotEmpty()))
+            safeText(measurer, label, Offset(max(slotFrom, 0f) + 16.dp.toPx(), top + 13.dp.toPx()), TextStyle(color = Color.White.copy(alpha = .85f), fontSize = 15.sp))
+    }
+
+    // блоки субтитров в нижней строке
+    s.captions.forEach { c ->
+        val l = g.x(c.startMs); val r = g.x(c.endMs)
+        if (r < -20f || l > g.width + 20f || r - l < 2f) return@forEach
+        drawRoundRect(BaseColors.Cyan.copy(alpha = .35f), Offset(l, g.textTop + 4.dp.toPx()), Size(max(2f, r - l - 2f), g.slotH - 8.dp.toPx()), CornerRadius(6.dp.toPx()))
+        // текст рисуем только если блок достаточно широк и хоть частично виден
+        if (r - l > 36.dp.toPx() && r > 0f && l < g.width) {
+            clipRect(left = max(l, 0f), top = g.textTop, right = min(r, g.width), bottom = g.textTop + g.slotH) {
+                safeText(measurer, c.text, Offset(max(l, 0f) + 6.dp.toPx(), g.textTop + 13.dp.toPx()), TextStyle(color = Color.White, fontSize = 12.sp))
+            }
+        }
     }
 
     // клипы основной дорожки
@@ -350,3 +378,18 @@ private fun DrawScope.drawTimeline(s: TlState, measurer: androidx.compose.ui.tex
 }
 
 private fun floorTo(v: Float, step: Float) = (v / step).toInt() * step
+
+/**
+ * Безопасный вывод текста. Стандартный drawText(measurer, …) считает maxWidth = ширина холста − topLeft.x
+ * и падает с IllegalArgumentException, когда подпись начинается правее видимой области.
+ * Здесь размер текста меряется без ограничений, а невидимые подписи пропускаются.
+ */
+private fun DrawScope.safeText(measurer: TextMeasurer, text: String, topLeft: Offset, style: TextStyle) {
+    if (text.isEmpty() || !topLeft.x.isFinite() || !topLeft.y.isFinite()) return
+    if (size.width <= 0f || size.height <= 0f || topLeft.x > size.width || topLeft.y > size.height) return
+    val layout: TextLayoutResult = try {
+        measurer.measure(text, style, softWrap = false, maxLines = 1, constraints = Constraints())
+    } catch (e: Exception) { return }
+    if (topLeft.x + layout.size.width < 0f) return
+    drawText(layout, topLeft = topLeft)
+}

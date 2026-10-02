@@ -5,6 +5,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
+import com.base.editor.captions.CaptionItem
+import com.base.editor.captions.CaptionManager
+import com.base.editor.captions.asr.SpeechLanguage
 import com.base.editor.core.Clip
 import com.base.editor.core.PickedMedia
 import com.base.editor.core.Transition
@@ -12,6 +15,7 @@ import com.base.editor.core.TransitionCatalog
 import com.base.editor.data.MediaProbe
 import com.base.editor.data.ProjectRepository
 import com.base.editor.media.AppDispatchers
+import com.base.editor.media.CaptionTrack
 import com.base.editor.media.CompositionFactory
 import com.base.editor.media.ExportQuality
 import com.base.editor.media.ExportRequest
@@ -48,6 +52,7 @@ interface TimelineActions {
     fun addAudio()
     fun addText()
     fun openTransitions(leftId: Long)
+    fun openCaption(id: String)
 }
 
 @OptIn(FlowPreview::class)
@@ -60,6 +65,7 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
 
     val catalog = TransitionCatalog(app)
     val controller = TimelineController(app, viewModelScope, catalog, dispatchers)
+    val captions = CaptionManager(app, viewModelScope, dispatchers)
     private val exporter = VideoExportManager(app, CompositionFactory(app, catalog), dispatchers)
 
     // состояние таймлайна — прямо из контроллера
@@ -80,6 +86,9 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
     val transitionFor = MutableStateFlow<Long?>(null)     // стык, для которого открыта панель переходов
     val transitionMaxMs = MutableStateFlow(0L)
     val exportState = MutableStateFlow<ExportState?>(null)
+    val captionPanelOpen = MutableStateFlow(false)
+    val editingCaptionId = MutableStateFlow<String?>(null)
+    val videoAspect get() = controller.canvas.let { it.width.toFloat() / it.height }
 
     var onRequestAddMedia: (() -> Unit)? = null
     private var aspect = 9f / 16f
@@ -89,11 +98,13 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
         viewModelScope.launch {
             val saved = repo.loadTimeline(projectId)
             controller.load(saved)
+            captions.load(repo.loadCaptions(projectId))
             withContext(dispatchers.default) { detectAspect() }      // чтение метаданных — не на главном потоке
             applyCanvas()
         }
         viewModelScope.launch { controller.events.collect { events.value = it } }
         viewModelScope.launch { controller.committed.debounce(600).collect { persist() } }
+        viewModelScope.launch { captions.committed.debounce(600).collect { persist() } }
         // результат экрана «добавить медиа» приходит через SavedStateHandle
         viewModelScope.launch {
             handle.getStateFlow<ArrayList<String>?>("added", null).filterNotNull().collect { list ->
@@ -125,7 +136,8 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
 
     private fun persist() {
         val data = controller.serialize(); val clips = controller.state.value.clips
-        persistScope.launch { repo.save(projectId, data, clips) }
+        val cap = captions.toJson()
+        persistScope.launch { repo.save(projectId, data, clips, cap) }
     }
     fun saveNow() = persist()
 
@@ -178,11 +190,26 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
         if (controller.setTransition(leftId, shaderId, durationMs) && shaderId != null) controller.previewTransition(leftId)
     }
 
+    // ───────── субтитры ─────────
+    fun openCaptions() { controller.pause(); selectedId.value = null; transitionFor.value = null; captionPanelOpen.value = true }
+    fun closeCaptions() { captionPanelOpen.value = false; editingCaptionId.value = null }
+    override fun openCaption(id: String) {
+        openCaptions()
+        captions.items.value.firstOrNull { it.id == id }?.let { controller.seekTo(it.startMs); editingCaptionId.value = id }
+    }
+    fun openCaptionItem(c: CaptionItem) { controller.pause(); controller.seekTo(c.startMs); editingCaptionId.value = c.id }
+    fun addCaptionHere() { editingCaptionId.value = captions.addAt(playheadMs.value) }
+    fun generateCaptions(lang: SpeechLanguage) {
+        if (controller.state.value.clips.none { it.type == com.base.editor.core.MediaType.VIDEO }) { events.value = "Нужен хотя бы один видеоклип со звуком"; return }
+        controller.pause(); captions.generate(controller.state.value, lang)
+    }
+
     // ───────── экспорт ─────────
     fun startExport(quality: ExportQuality = ExportQuality.P1080) {
         if (exportJob?.isActive == true) return
         controller.pause()
-        val request = ExportRequest(controller.state.value, aspect, quality, removeAudio = muted.value)
+        val track = captions.items.value.takeIf { it.isNotEmpty() }?.let { CaptionTrack(it, captions.style.value) }
+        val request = ExportRequest(controller.state.value, aspect, quality, removeAudio = muted.value, captions = track)
         exportJob = viewModelScope.launch {
             exporter.export(request).collect { s ->
                 exportState.value = s
@@ -199,6 +226,7 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
     fun dismissExport() { exportState.value = null }
 
     override fun onCleared() {
+        captions.cancelGeneration()
         persist()
         controller.release()
     }
