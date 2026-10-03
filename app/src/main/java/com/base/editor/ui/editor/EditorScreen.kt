@@ -16,6 +16,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.animation.AnimatedVisibility
@@ -249,10 +250,7 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
                 awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
             })
 
-            AnimatedVisibility(
-                visible = captionPanel, modifier = Modifier.align(Alignment.BottomCenter),
-                enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut(),
-            ) {
+            BottomPanel(visible = captionPanel) {
                 CaptionPanel(
                     items = captionItems, style = captionStyle, generation = captionGen, playheadMs = playhead, editingId = editingCaption,
                     onGenerate = vm::generateCaptions, onDismissError = vm.captions::dismissError,
@@ -263,10 +261,7 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
                 )
             }
             val tf = transitionFor
-            AnimatedVisibility(
-                visible = tf != null && !captionPanel, modifier = Modifier.align(Alignment.BottomCenter),
-                enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut(),
-            ) {
+            BottomPanel(visible = tf != null && !captionPanel) {
                 if (tf != null) TransitionPanel(
                     current = vm.currentTransition(tf), maxMs = transitionMax, items = vm.catalog.items,
                     onPick = { id, dur -> vm.applyTransition(tf, id, dur) },
@@ -279,6 +274,15 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
 }
 
 private const val TOOLBAR_HEIGHT_DP = 68
+
+/** Панель, выезжающая снизу поверх фиксированной области (не влияет на размеры соседей). */
+@Composable
+private fun BoxScope.BottomPanel(visible: Boolean, content: @Composable () -> Unit) {
+    AnimatedVisibility(
+        visible = visible, modifier = Modifier.align(Alignment.BottomCenter),
+        enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut(),
+    ) { content() }
+}
 
 /** Строка инструментов: каждая вкладка получает ровно равную долю ширины и центрируется. */
 @Composable
