@@ -1,0 +1,33 @@
+package com.base.editor.text
+
+import org.json.JSONArray
+import org.json.JSONObject
+
+/** Сохранение текстовых слоёв в проект; битые записи пропускаются, а не ломают загрузку. */
+object TextJson {
+    fun encode(items: List<TextClip>): String = JSONArray().also { arr ->
+        items.forEach { c ->
+            arr.put(JSONObject().put("id", c.id).put("t", c.text).put("s", c.startMs).put("d", c.durationMs)
+                .put("x", c.positionX.toDouble()).put("y", c.positionY.toDouble()).put("size", c.fontSizeSp.toDouble())
+                .put("color", c.textColor).put("bg", c.backgroundColor))
+        }
+    }.toString()
+
+    fun decode(json: String?): List<TextClip> {
+        if (json.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                runCatching {
+                    val o = arr.getJSONObject(i)
+                    TextClip(
+                        id = o.getString("id"), text = o.getString("t"), startMs = o.getLong("s"), durationMs = o.optLong("d", 3000L),
+                        positionX = o.optDouble("x", 0.5).toFloat(), positionY = o.optDouble("y", 0.5).toFloat(),
+                        fontSizeSp = o.optDouble("size", 24.0).toFloat(), textColor = o.optLong("color", 0xFFFFFFFF),
+                        backgroundColor = o.optLong("bg", 0L),
+                    )
+                }.getOrNull()
+            }
+        }.getOrDefault(emptyList())
+    }
+}

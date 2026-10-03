@@ -1,0 +1,34 @@
+package com.base.editor.text
+
+import java.util.UUID
+
+/**
+ * Текстовый слой на дорожке «Текст». Неизменяемая модель: правка = copy(), поэтому состояние
+ * безопасно раздаётся через StateFlow.
+ *
+ * @param positionX/positionY центр текста в долях кадра (0.5 — середина).
+ * @param fontSizeSp размер относительно эталонной высоты кадра [TextClipRenderer.REFERENCE_HEIGHT]:
+ *   в превью и в экспорте текст занимает одну и ту же долю кадра.
+ * @param textColor / backgroundColor — ARGB (прозрачный фон — alpha = 0).
+ */
+data class TextClip(
+    val id: String = UUID.randomUUID().toString(),
+    val text: String,
+    val startMs: Long,
+    val durationMs: Long = 3000L,
+    val positionX: Float = 0.5f,
+    val positionY: Float = 0.5f,
+    val fontSizeSp: Float = 24f,
+    val textColor: Long = 0xFFFFFFFF,
+    val backgroundColor: Long = 0x00000000,
+) {
+    val endMs get() = startMs + durationMs
+    val hasBackground get() = (backgroundColor ushr 24) > 0L
+
+    fun isVisibleAt(timeMs: Long) = timeMs >= startMs && timeMs < startMs + durationMs
+
+    companion object {
+        const val MIN_DURATION_MS = 500L
+        const val MAX_DURATION_MS = 30_000L
+    }
+}

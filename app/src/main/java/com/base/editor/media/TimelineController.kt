@@ -15,6 +15,9 @@ import com.base.editor.core.PickedMedia
 import com.base.editor.core.TransitionCatalog
 import com.base.editor.domain.TimelineModel
 import com.base.editor.domain.TimelineState
+import com.base.editor.text.TextClip
+import com.base.editor.text.TextJson
+import com.base.editor.text.TextTrack
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -49,6 +52,7 @@ class TimelineController(
 ) : Player.Listener {
 
     private val model = TimelineModel()
+    private val textTrack = TextTrack()
     private val factory = CompositionFactory(context.applicationContext, catalog)
 
     val player: CompositionPlayer = CompositionPlayer.Builder(context.applicationContext).build().also { it.addListener(this) }
@@ -65,6 +69,10 @@ class TimelineController(
     val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val events: SharedFlow<String> = _events.asSharedFlow()
+    private val _texts = MutableStateFlow<List<TextClip>>(emptyList())
+    /** Текстовые слои дорожки «Текст» (отдельно от видеодорожки). */
+    val texts: StateFlow<List<TextClip>> = _texts.asStateFlow()
+
     /** Срабатывает после каждой завершённой правки — по нему проект сохраняется. */
     private val _committed = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val committed: SharedFlow<Unit> = _committed.asSharedFlow()
@@ -115,6 +123,16 @@ class TimelineController(
     }
 
     fun serialize(): String = model.serialize()
+
+    // ───────── дорожка «Текст» ─────────
+    fun loadTexts(json: String?) { textTrack.load(TextJson.decode(json)); _texts.value = textTrack.all() }
+    fun serializeTexts(): String = TextJson.encode(textTrack.all())
+
+    fun addText(clip: TextClip) { textTrack.add(clip); textsChanged() }
+    fun updateText(clip: TextClip) { if (textTrack.update(clip)) textsChanged() }
+    fun removeText(id: String) { if (textTrack.remove(id)) textsChanged() }
+    fun findText(id: String) = textTrack.find(id)
+    private fun textsChanged() { _texts.value = textTrack.all(); _committed.tryEmit(Unit) }
 
     /** Размер кадра превью/экспорта. Меняется редко (смена пропорций или качества). */
     fun setCanvas(size: Size) {

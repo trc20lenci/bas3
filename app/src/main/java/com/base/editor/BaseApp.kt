@@ -26,6 +26,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.base.editor.core.PickedMedia
+import com.base.editor.data.PickedMediaInbox
 import com.base.editor.data.ProjectRepository
 import com.base.editor.ui.editor.EditorScreen
 import com.base.editor.ui.picker.MediaPickerScreen
@@ -36,10 +37,11 @@ import kotlinx.coroutines.launch
 object Routes {
     const val MAIN = "main"
     const val PICKER_NEW = "picker/new/{tab}"
-    const val PICKER_ADD = "picker/add"
+    const val PICKER_ADD = "picker/add/{projectId}"
     const val EDITOR = "editor/{projectId}"
     fun pickerNew(photo: Boolean) = "picker/new/${if (photo) "photo" else "video"}"
     fun editor(id: String) = "editor/$id"
+    fun pickerAdd(projectId: String) = "picker/add/$projectId"
 }
 
 @Composable
@@ -76,21 +78,23 @@ fun BaseApp() {
                 }
             }
             // Добавление медиа в открытый проект: результат уходит в SavedStateHandle редактора
-            composable(Routes.PICKER_ADD) {
+            composable(Routes.PICKER_ADD, arguments = listOf(navArgument("projectId") { type = NavType.StringType })) { e ->
+                val projectId = e.arguments?.getString("projectId").orEmpty()
                 BaseTheme(dark = true) {
                     MediaPickerScreen(
                         startOnPhotos = false,
                         onClose = { nav.popBackStack() },
                         onConfirm = { items ->
-                            nav.previousBackStackEntry?.savedStateHandle?.set("added", ArrayList(items.map { it.encode() }))
+                            PickedMediaInbox.post(projectId, items)   // редактор заберёт и добавит клипы
                             nav.popBackStack()
                         },
                     )
                 }
             }
-            composable(Routes.EDITOR, arguments = listOf(navArgument("projectId") { type = NavType.StringType })) {
+            composable(Routes.EDITOR, arguments = listOf(navArgument("projectId") { type = NavType.StringType })) { e ->
+                val projectId = e.arguments?.getString("projectId").orEmpty()
                 BaseTheme(dark = true) {
-                    EditorScreen(onClose = { nav.popBackStack() }, onAddMedia = { nav.navigate(Routes.PICKER_ADD) })
+                    EditorScreen(onClose = { nav.popBackStack() }, onAddMedia = { nav.navigate(Routes.pickerAdd(projectId)) })
                 }
             }
         }

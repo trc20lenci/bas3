@@ -21,11 +21,12 @@ enum class CaptionFont(val label: String) {
 
 /** Что происходит со словом, которое звучит прямо сейчас. */
 enum class WordAnimation(val label: String) {
-    NONE("Без анимации"),
+    /** Слово окрашивается только пока звучит. */
     HIGHLIGHT("Подсветка"),
+    /** Слова по очереди закрашиваются и остаются закрашенными. */
     KARAOKE("Караоке"),
-    POP("Увеличение"),
-    BOUNCE("Прыжок"),
+    /** Подсветка + «выпрыгивание» слова на пружине (с перелётом). */
+    POP("Выпрыгивание"),
 }
 
 /**
@@ -34,35 +35,35 @@ enum class WordAnimation(val label: String) {
  * Цвета — ARGB (Int).
  */
 data class CaptionStyle(
-    val id: String = "business",
-    val name: String = "Бизнес",
+    val id: String = "tiktok",
+    val name: String = "TikTok",
     val font: CaptionFont = CaptionFont.MONTSERRAT,
     val fontWeight: Int = 900,
     val italic: Boolean = false,
     val uppercase: Boolean = true,
     /** Размер шрифта как доля высоты кадра. */
-    val sizeFrac: Float = 0.050f,
+    val sizeFrac: Float = 0.0625f,
     val letterSpacingEm: Float = 0f,
     val textColor: Int = 0xFFFFFFFF.toInt(),
-    val activeColor: Int = 0xFF00E5FF.toInt(),
+    val activeColor: Int = 0xFF39E508.toInt(),
     val strokeColor: Int = 0xFF000000.toInt(),
     /** Толщина обводки в долях размера шрифта (0 — без обводки). */
-    val strokeEm: Float = 0.10f,
+    val strokeEm: Float = 0.083f,
     /** Фоновая плашка; прозрачный (alpha = 0) — без плашки. */
     val backgroundColor: Int = 0x00000000,
     val backgroundPaddingEm: Float = 0.28f,
     val backgroundCornerEm: Float = 0.30f,
     /** Тень/свечение: свечение = тень без смещения и яркий цвет. */
-    val shadowColor: Int = 0x80000000.toInt(),
-    val shadowBlurEm: Float = 0.10f,
-    val shadowDyEm: Float = 0.06f,
-    val animation: WordAnimation = WordAnimation.HIGHLIGHT,
+    val shadowColor: Int = 0x00000000,
+    val shadowBlurEm: Float = 0f,
+    val shadowDyEm: Float = 0f,
+    val animation: WordAnimation = WordAnimation.POP,
     /** Масштаб активного слова (для POP/BOUNCE). */
-    val activeScale: Float = 1.15f,
+    val activeScale: Float = 1.18f,
     /** Максимальная ширина блока, доля ширины кадра. */
-    val maxWidthFrac: Float = 0.88f,
+    val maxWidthFrac: Float = 0.90f,
     /** Вертикальный центр блока, доля высоты кадра (0 — верх, 1 — низ). */
-    val positionY: Float = 0.72f,
+    val positionY: Float = 0.78f,
 ) {
     val hasBackground get() = (backgroundColor ushr 24) > 0
 }

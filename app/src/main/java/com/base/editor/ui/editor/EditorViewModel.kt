@@ -7,7 +7,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
 import com.base.editor.captions.CaptionItem
 import com.base.editor.captions.CaptionManager
-import com.base.editor.captions.asr.SpeechLanguage
+import com.base.editor.data.PickedMediaInbox
+import com.base.editor.text.TextClip
 import com.base.editor.core.Clip
 import com.base.editor.core.PickedMedia
 import com.base.editor.core.Transition
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -53,7 +55,11 @@ interface TimelineActions {
     fun addText()
     fun openTransitions(leftId: Long)
     fun openCaption(id: String)
+    fun openText(id: String)
 }
+
+/** Редактируемый текст: [isNew] — ещё не добавлен на дорожку. */
+data class TextDraft(val clip: TextClip, val isNew: Boolean)
 
 @OptIn(FlowPreview::class)
 @UnstableApi
@@ -87,6 +93,9 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
     val transitionMaxMs = MutableStateFlow(0L)
     val exportState = MutableStateFlow<ExportState?>(null)
     val captionPanelOpen = MutableStateFlow(false)
+    /** Текст, который сейчас редактируется (новый или существующий). */
+    val textDraft = MutableStateFlow<TextDraft?>(null)
+    val texts get() = controller.texts
     val editingCaptionId = MutableStateFlow<String?>(null)
     val videoAspect get() = controller.canvas.let { it.width.toFloat() / it.height }
 
@@ -99,18 +108,16 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
             val saved = repo.loadTimeline(projectId)
             controller.load(saved)
             captions.load(repo.loadCaptions(projectId))
+            controller.loadTexts(repo.loadTexts(projectId))
             withContext(dispatchers.default) { detectAspect() }      // чтение метаданных — не на главном потоке
             applyCanvas()
         }
         viewModelScope.launch { controller.events.collect { events.value = it } }
         viewModelScope.launch { controller.committed.debounce(600).collect { persist() } }
         viewModelScope.launch { captions.committed.debounce(600).collect { persist() } }
-        // результат экрана «добавить медиа» приходит через SavedStateHandle
+        // файлы, выбранные в галерее по кнопке «+», приходят через почтовый ящик проекта
         viewModelScope.launch {
-            handle.getStateFlow<ArrayList<String>?>("added", null).filterNotNull().collect { list ->
-                handle["added"] = null
-                controller.addMedia(list.map(PickedMedia::decode))
-            }
+            for (items in PickedMediaInbox.channel(projectId)) controller.addMedia(items)
         }
         // выбранный клип / панель переходов не должны ссылаться на исчезнувшие клипы
         viewModelScope.launch {
@@ -136,8 +143,8 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
 
     private fun persist() {
         val data = controller.serialize(); val clips = controller.state.value.clips
-        val cap = captions.toJson()
-        persistScope.launch { repo.save(projectId, data, clips, cap) }
+        val cap = captions.toJson(); val txt = controller.serializeTexts()
+        persistScope.launch { repo.save(projectId, data, clips, cap, txt) }
     }
     fun saveNow() = persist()
 
@@ -199,17 +206,43 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
     }
     fun openCaptionItem(c: CaptionItem) { controller.pause(); controller.seekTo(c.startMs); editingCaptionId.value = c.id }
     fun addCaptionHere() { editingCaptionId.value = captions.addAt(playheadMs.value) }
-    fun generateCaptions(lang: SpeechLanguage) {
+    fun generateCaptions() {
         if (controller.state.value.clips.none { it.type == com.base.editor.core.MediaType.VIDEO }) { events.value = "Нужен хотя бы один видеоклип со звуком"; return }
-        controller.pause(); captions.generate(controller.state.value, lang)
+        controller.pause(); captions.generate(controller.state.value)
     }
+
+    // ───────── текст ─────────
+    /** Кнопка «Текст»: открывает редактор нового слоя на позиции курсора. */
+    fun openNewText() {
+        controller.pause(); selectedId.value = null; transitionFor.value = null; captionPanelOpen.value = false
+        textDraft.value = TextDraft(TextClip(text = "", startMs = playheadMs.value), isNew = true)
+    }
+
+    override fun openText(id: String) {
+        val clip = controller.findText(id) ?: return
+        controller.pause(); controller.seekTo(clip.startMs)
+        textDraft.value = TextDraft(clip, isNew = false)
+    }
+
+    fun updateTextDraft(f: (TextClip) -> TextClip) { textDraft.update { d -> d?.copy(clip = f(d.clip)) } }
+
+    /** «Готово»: пустой новый текст не создаётся. */
+    fun commitText() {
+        val d = textDraft.value ?: return
+        textDraft.value = null
+        if (d.clip.text.isBlank()) { if (!d.isNew) controller.removeText(d.clip.id); return }
+        if (d.isNew) controller.addText(d.clip) else controller.updateText(d.clip)
+    }
+
+    fun cancelText() { textDraft.value = null }
+    fun deleteText() { textDraft.value?.let { if (!it.isNew) controller.removeText(it.clip.id) }; textDraft.value = null }
 
     // ───────── экспорт ─────────
     fun startExport(quality: ExportQuality = ExportQuality.P1080) {
         if (exportJob?.isActive == true) return
         controller.pause()
         val track = captions.items.value.takeIf { it.isNotEmpty() }?.let { CaptionTrack(it, captions.style.value) }
-        val request = ExportRequest(controller.state.value, aspect, quality, removeAudio = muted.value, captions = track)
+        val request = ExportRequest(controller.state.value, aspect, quality, removeAudio = muted.value, captions = track, texts = controller.texts.value)
         exportJob = viewModelScope.launch {
             exporter.export(request).collect { s ->
                 exportState.value = s

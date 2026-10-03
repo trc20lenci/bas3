@@ -50,17 +50,22 @@ class ProjectRepository private constructor(private val app: Context) {
         runCatching { JSONObject(File(dir, "$id.json").readText()).optString("captions").takeIf { it.isNotEmpty() } }.getOrNull()
     }
 
-    /** captions == null — оставить сохранённые ранее субтитры без изменений. */
-    suspend fun save(id: String, timeline: String, clips: List<Clip>, captions: String? = null) = withContext(Dispatchers.IO) {
+    suspend fun loadTexts(id: String): String? = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(File(dir, "$id.json").readText()).optString("texts").takeIf { it.isNotEmpty() } }.getOrNull()
+    }
+
+    /** captions/texts == null — оставить сохранённые ранее данные без изменений. */
+    suspend fun save(id: String, timeline: String, clips: List<Clip>, captions: String? = null, texts: String? = null) = withContext(Dispatchers.IO) {
         val old = runCatching { JSONObject(File(dir, "$id.json").readText()) }.getOrNull()
-        write(id, old?.optString("name") ?: nextName(), timeline, clips, old?.optString("thumbKey"), captions ?: old?.optString("captions"))
+        write(id, old?.optString("name") ?: nextName(), timeline, clips, old?.optString("thumbKey"),
+            captions ?: old?.optString("captions"), texts ?: old?.optString("texts"))
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
         File(dir, "$id.json").delete(); File(dir, "$id.jpg").delete(); revision.value++
     }
 
-    private suspend fun write(id: String, name: String, timeline: String, clips: List<Clip>, oldThumbKey: String? = null, captions: String? = null) {
+    private suspend fun write(id: String, name: String, timeline: String, clips: List<Clip>, oldThumbKey: String? = null, captions: String? = null, texts: String? = null) {
         val main = clips.filter { it.row == 0 }.minByOrNull { it.startMs }
         val thumbKey = main?.let { "${it.uri}@${it.srcInMs}" }.orEmpty()
         if (main != null && thumbKey != oldThumbKey) {
@@ -73,7 +78,7 @@ class ProjectRepository private constructor(private val app: Context) {
             .put("durationMs", clips.maxOfOrNull { it.endMs } ?: 0L)
             .put("sizeBytes", clips.map { it.uri }.distinct().sumOf { sizeOf(it) })
             .put("hasVideo", clips.any { it.type == MediaType.VIDEO })
-            .put("thumbKey", thumbKey).put("timeline", timeline).put("captions", captions.orEmpty())
+            .put("thumbKey", thumbKey).put("timeline", timeline).put("captions", captions.orEmpty()).put("texts", texts.orEmpty())
         File(dir, "$id.json").writeText(json.toString())
         revision.value++
     }

@@ -33,6 +33,8 @@ data class CompositionRequest(
     val onTransitionFallback: (String) -> Unit = {},
     /** Субтитры «вжигаются» только в экспорт; в превью их рисует Compose-оверлей. */
     val captions: CaptionTrack? = null,
+    /** Текстовые слои — тоже только в экспорт. */
+    val texts: List<com.base.editor.text.TextClip> = emptyList(),
 )
 
 /**
@@ -76,11 +78,12 @@ class CompositionFactory(private val context: Context, private val catalog: Tran
             cursorMs = clip.endMs
         }
         val builder = Composition.Builder(seq.build())
-        req.captions?.takeIf { it.items.isNotEmpty() }?.let { track ->
-            // эффект уровня композиции: время кадров — время всего проекта, субтитры совпадают с таймлайном
-            val overlay = CaptionBitmapOverlay(context, track, req.canvas)
-            builder.setEffects(Effects(emptyList(), listOf(OverlayEffect(listOf(overlay)))))
+        // эффект уровня композиции: время кадров — время всего проекта, слои совпадают с таймлайном
+        val overlays = buildList<androidx.media3.effect.TextureOverlay> {
+            req.captions?.takeIf { it.items.isNotEmpty() }?.let { add(CaptionBitmapOverlay(context, it, req.canvas)) }
+            if (req.texts.isNotEmpty()) add(TextBitmapOverlay(context, req.texts, req.canvas))
         }
+        if (overlays.isNotEmpty()) builder.setEffects(Effects(emptyList(), listOf(OverlayEffect(overlays))))
         return builder.build()
     }
 

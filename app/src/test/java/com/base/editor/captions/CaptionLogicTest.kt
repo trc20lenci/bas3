@@ -12,7 +12,7 @@ class CaptionLogicTest {
 
     @Test fun segmentsByWordCountPauseAndSentence() {
         var n = 0
-        val items = CaptionSegmenter(maxChars = 40, newId = { "id${n++}" }).segment(words())
+        val items = CaptionSegmenter(maxWords = 4, maxChars = 40, maxDurationMs = 3200, newId = { "id${n++}" }).segment(words())
         assertEquals(4, items.size)
         assertEquals("привет это тест субтитров", items[0].text)
         assertTrue(items[0].endMs <= items[1].startMs)
@@ -50,7 +50,7 @@ class CaptionLogicTest {
 
     @Test fun jsonRoundTripKeepsItemsAndStyle() {
         val items = CaptionSegmenter().segment(words())
-        val style = CaptionPresets.byId("neon")!!.copy(positionY = 0.4f)
+        val style = CaptionPresets.byId("karaoke")!!.copy(positionY = 0.4f)
         val (i2, s2) = CaptionJson.decode(CaptionJson.encode(items, style))
         assertEquals(items, i2)
         assertEquals(style, s2)
@@ -59,5 +59,10 @@ class CaptionLogicTest {
     @Test fun brokenJsonFallsBackToDefaults() {
         val (items, style) = CaptionJson.decode("{oops")
         assertTrue(items.isEmpty()); assertEquals(CaptionPresets.default, style)
+    }
+
+    @Test fun presetsAreTikTokStyle() {
+        assertEquals(listOf("tiktok", "contrast", "karaoke", "pulse"), CaptionPresets.all.map { it.id })
+        assertTrue(CaptionPresets.all.all { it.uppercase && it.strokeEm > 0f })
     }
 }

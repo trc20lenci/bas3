@@ -4,9 +4,9 @@ import java.util.UUID
 
 /** Режет поток распознанных слов на удобные для чтения карточки. */
 class CaptionSegmenter(
-    private val maxWords: Int = 4,
-    private val maxChars: Int = 22,
-    private val maxDurationMs: Long = 3200,
+    private val maxWords: Int = 5,
+    private val maxChars: Int = 26,
+    private val maxDurationMs: Long = 1200,
     private val maxGapMs: Long = 600,
     private val tailMs: Long = 150,
     private val newId: () -> String = { UUID.randomUUID().toString() },

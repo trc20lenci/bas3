@@ -15,8 +15,9 @@ import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.unit.Constraints
-import kotlin.math.PI
-import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.sqrt
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -55,15 +56,73 @@ object CaptionRenderer {
     }
 
     private fun DrawScope.drawInternal(measurer: TextMeasurer, item: CaptionItem, style: CaptionStyle, timeMs: Long, centerY: Float, viewportHeight: Float) {
-        val fontPx = max(6f, style.sizeFrac * viewportHeight)
-        val maxW = max(fontPx, size.width * style.maxWidthFrac.coerceIn(0.3f, 1f))
+        val maxW = max(8f, size.width * style.maxWidthFrac.coerceIn(0.3f, 1f))
+        var fontPx = max(6f, style.sizeFrac * viewportHeight)
+        var lines = layout(measurer, item, style, fontPx, maxW)
+        // подгонка под ширину: если фраза не влезает в одну строку — сначала уменьшаем шрифт (до 55%), потом переносим
+        val oneLine = lines.sumOf { it.width.toDouble() }.toFloat() + fontPx * 0.28f * (item.words.size - 1)
+        if (oneLine > maxW) {
+            fontPx = max(fontPx * 0.55f, fontPx * maxW / oneLine)
+            lines = layout(measurer, item, style, fontPx, maxW)
+        }
+        if (lines.isEmpty()) return
+
+        val pad = if (style.hasBackground) style.backgroundPaddingEm * fontPx else 0f
+        val lineGap = fontPx * 0.08f + pad * 0.6f
+        val blockH = lines.sumOf { it.height.toDouble() }.toFloat() + lineGap * (lines.size - 1)
+        // блок целиком внутри области (без coerceIn с перевёрнутыми границами)
+        var top = centerY - blockH / 2
+        top = min(top, size.height - blockH - 2f)
+        top = max(top, 2f)
+
+        // появление карточки: масштаб 0.8 → 1 и сдвиг снизу (как в коротких видео)
+        val enter = easeOut(((timeMs - item.startMs) / ENTER_MS).coerceIn(0f, 1f))
+        val enterScale = 0.8f + 0.2f * enter
+        val enterDy = (1f - enter) * viewportHeight * 0.026f
+        val pivot = Offset(size.width / 2f, top + blockH / 2f)
+
+        withTransform({ translate(0f, enterDy); scale(enterScale, enterScale, pivot) }) {
+            var y = top
+            for (line in lines) {
+                val left = (size.width - line.width) / 2
+                if (style.hasBackground) {
+                    drawRoundRect(
+                        color = Color(style.backgroundColor),
+                        topLeft = Offset(left - pad, y - pad * 0.5f),
+                        size = Size(line.width + pad * 2, line.height + pad),
+                        cornerRadius = CornerRadius(style.backgroundCornerEm * fontPx),
+                    )
+                }
+                for (p in line.words) {
+                    val w = item.words[p.index]
+                    val active = timeMs >= w.startMs && timeMs < w.endMs
+                    val past = timeMs >= w.endMs
+                    val color = when (style.animation) {
+                        WordAnimation.KARAOKE -> if (past || active) style.activeColor else style.textColor
+                        else -> if (active) style.activeColor else style.textColor
+                    }
+                    var scale = 1f
+                    if (style.animation == WordAnimation.POP) {
+                        // пружина с перелётом при начале слова, плавный возврат после его конца
+                        val rise = Spring.step((timeMs - w.startMs) / 1000f)
+                        val release = if (timeMs >= w.endMs) 1f - easeOut(((timeMs - w.endMs) / RELEASE_MS).coerceIn(0f, 1f)) else 1f
+                        scale = 1f + (style.activeScale - 1f) * rise * release
+                    }
+                    val topLeft = Offset(left + p.x, y + (line.height - p.layout.size.height) / 2)
+                    val wp = Offset(topLeft.x + p.layout.size.width / 2f, topLeft.y + p.layout.size.height / 2f)
+                    withTransform({ scale(scale, scale, wp) }) { drawWord(p.layout, style, color, topLeft, fontPx) }
+                }
+                y += line.height + lineGap
+            }
+        }
+    }
+
+    private fun DrawScope.layout(measurer: TextMeasurer, item: CaptionItem, style: CaptionStyle, fontPx: Float, maxW: Float): MutableList<Line> {
         val base = TextStyle(
             fontFamily = CaptionFonts.family(style.font, style.fontWeight, style.italic),
             fontSize = fontPx.toSp(),
             letterSpacing = (style.letterSpacingEm * fontPx).toSp(),
         )
-
-        // ── разметка: слова → строки ──
         val spaceW = fontPx * 0.28f
         val lines = mutableListOf(Line())
         item.words.forEachIndexed { i, w ->
@@ -80,84 +139,38 @@ object CaptionRenderer {
             line.height = max(line.height, layout.size.height.toFloat())
         }
         lines.removeAll { it.words.isEmpty() }
-        if (lines.isEmpty()) return
-
-        val pad = if (style.hasBackground) style.backgroundPaddingEm * fontPx else 0f
-        val lineGap = fontPx * 0.08f + pad * 0.6f
-        val blockH = lines.sumOf { it.height.toDouble() }.toFloat() + lineGap * (lines.size - 1)
-        // блок целиком внутри области (без coerceIn с перевёрнутыми границами)
-        var top = centerY - blockH / 2
-        top = min(top, size.height - blockH - 2f)
-        top = max(top, 2f)
-
-        // ── анимации ──
-        val enter = ((timeMs - item.startMs) / 140f).coerceIn(0f, 1f)           // появление карточки
-        val alpha = easeOut(enter)
-        val active = CaptionOps.activeWordIndex(item, timeMs)
-
-        var y = top
-        for (line in lines) {
-            val left = (size.width - line.width) / 2
-            if (style.hasBackground) {
-                drawRoundRect(
-                    color = Color(style.backgroundColor).withAlpha(alpha),
-                    topLeft = Offset(left - pad, y - pad * 0.5f),
-                    size = Size(line.width + pad * 2, line.height + pad),
-                    cornerRadius = CornerRadius(style.backgroundCornerEm * fontPx),
-                )
-            }
-            for (p in line.words) {
-                val w = item.words[p.index]
-                val isActive = p.index == active
-                val past = p.index < active
-                val color = when (style.animation) {
-                    WordAnimation.NONE -> style.textColor
-                    WordAnimation.KARAOKE -> if (past || isActive) style.activeColor else style.textColor
-                    else -> if (isActive) style.activeColor else style.textColor
-                }
-                val sinceStart = (timeMs - w.startMs).coerceAtLeast(0)
-                var scale = 1f
-                var dy = 0f
-                if (isActive) when (style.animation) {
-                    WordAnimation.POP -> scale = 1f + (style.activeScale - 1f) * popCurve(sinceStart / 150f)
-                    WordAnimation.BOUNCE -> {
-                        val t = (sinceStart / 260f).coerceIn(0f, 1f)
-                        scale = 1f + (style.activeScale - 1f) * popCurve(sinceStart / 150f)
-                        dy = -fontPx * 0.22f * sin(PI.toFloat() * t)
-                    }
-                    else -> Unit
-                }
-                val topLeft = Offset(left + p.x, y + (line.height - p.layout.size.height) / 2 + dy)
-                val pivot = Offset(topLeft.x + p.layout.size.width / 2f, topLeft.y + p.layout.size.height / 2f)
-                withTransform({ scale(scale, scale, pivot) }) { drawWord(p.layout, style, color, topLeft, fontPx, alpha) }
-            }
-            y += line.height + lineGap
-        }
+        return lines
     }
 
-    private fun DrawScope.drawWord(layout: TextLayoutResult, style: CaptionStyle, fill: Int, topLeft: Offset, fontPx: Float, alpha: Float) {
+    private fun DrawScope.drawWord(layout: TextLayoutResult, style: CaptionStyle, fill: Int, topLeft: Offset, fontPx: Float) {
         // 1) тень / свечение
         if ((style.shadowColor ushr 24) > 0 && style.shadowBlurEm > 0f || (style.shadowColor ushr 24) > 0 && style.shadowDyEm != 0f) {
-            val sh = Shadow(Color(style.shadowColor).withAlpha(alpha), Offset(0f, style.shadowDyEm * fontPx), max(0.1f, style.shadowBlurEm * fontPx))
-            drawText(layout, color = Color(fill).withAlpha(alpha), topLeft = topLeft, shadow = sh)
+            val sh = Shadow(Color(style.shadowColor), Offset(0f, style.shadowDyEm * fontPx), max(0.1f, style.shadowBlurEm * fontPx))
+            drawText(layout, color = Color(fill), topLeft = topLeft, shadow = sh)
         }
         // 2) обводка
         if (style.strokeEm > 0f) {
-            drawText(layout, color = Color(style.strokeColor).withAlpha(alpha), topLeft = topLeft,
+            drawText(layout, color = Color(style.strokeColor), topLeft = topLeft,
                 drawStyle = Stroke(width = style.strokeEm * fontPx * 2f, join = StrokeJoin.Round))
         }
         // 3) заливка
-        drawText(layout, color = Color(fill).withAlpha(alpha), topLeft = topLeft)
+        drawText(layout, color = Color(fill), topLeft = topLeft)
     }
 
-    private fun Color.withAlpha(a: Float) = copy(alpha = alpha * a)
+    private const val ENTER_MS = 170f
+    private const val RELEASE_MS = 140f
     private fun easeOut(t: Float) = 1f - (1f - t).pow(3)
+}
 
-    /** 0 → 1 с небольшим «перелётом» (эффект pop). */
-    private fun popCurve(t: Float): Float {
-        val x = t.coerceIn(0f, 1f)
-        val c1 = 1.70158f; val c3 = c1 + 1f
-        val back = 1f + c3 * (x - 1f).pow(3) + c1 * (x - 1f).pow(2)
-        return if (x >= 1f) 1f else abs(back).coerceAtMost(1.4f)
+/** Пружина с перелётом (затухающие колебания), 0 → 1: «выпрыгивание» слова. */
+internal object Spring {
+    private const val DAMPING = 0.45f
+    private const val OMEGA = 30f                                   // рад/с: полный цикл ≈ 0.2 с
+
+    fun step(tSeconds: Float): Float {
+        if (tSeconds <= 0f) return 0f
+        val wd = OMEGA * sqrt(1f - DAMPING * DAMPING)
+        val decay = exp(-DAMPING * OMEGA * tSeconds)
+        return 1f - decay * (cos(wd * tSeconds) + DAMPING * OMEGA / wd * sin(wd * tSeconds))
     }
 }

@@ -40,6 +40,7 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.unit.Constraints
 import android.util.Log
 import com.base.editor.captions.CaptionItem
+import com.base.editor.text.TextClip
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
@@ -69,7 +70,7 @@ import kotlin.math.roundToInt
  */
 @Composable
 fun TimelineView(
-    clips: List<Clip>, transitions: List<Transition>, captions: List<CaptionItem>, selectedId: Long?, playheadMs: Long, totalMs: Long, pxPerSecDp: Float,
+    clips: List<Clip>, transitions: List<Transition>, captions: List<CaptionItem>, texts: List<TextClip>, selectedId: Long?, playheadMs: Long, totalMs: Long, pxPerSecDp: Float,
     actions: TimelineActions, modifier: Modifier = Modifier,
 ) {
     val ctx = LocalContext.current
@@ -80,7 +81,7 @@ fun TimelineView(
     var tick by remember { mutableIntStateOf(0) }          // перерисовка после подгрузки миниатюр
 
     val geo = Geo(density, widthPx.toFloat(), playheadMs, pxPerSecDp)
-    val cur by rememberUpdatedState(TlState(geo, clips, transitions, captions, selectedId, totalMs))
+    val cur by rememberUpdatedState(TlState(geo, clips, transitions, captions, texts, selectedId, totalMs))
     val act by rememberUpdatedState(actions)
 
     // Очередь миниатюр: draw только регистрирует недостающие ключи, загрузка — здесь.
@@ -162,7 +163,7 @@ fun TimelineView(
                             is Hit.Body -> act.select(hit.clip.id)
                             is Hit.Handle -> act.select(hit.clip.id)
                             is Hit.Junction -> act.openTransitions(hit.leftId)
-                            Hit.Plus -> act.addMedia()
+                            is Hit.Text -> act.openText(hit.id)
                             is Hit.Caption -> act.openCaption(hit.id)
                             Hit.AudioSlot -> act.addAudio()
                             Hit.TextSlot -> act.addText()
@@ -188,7 +189,8 @@ fun TimelineView(
 
 // ───────────────────────── геометрия и хит-тест ─────────────────────────
 
-private const val TL_HEIGHT_DP = 214
+/** Высота таймлайна фиксирована: экран не «прыгает» при появлении дорожек. */
+const val TL_HEIGHT_DP = 250
 private enum class Mode { PENDING, SCROLL, MOVE, TRIM_START, TRIM_END, ZOOM }
 private class ThumbReq(val key: String, val uri: String, val type: MediaType, val bucketMs: Long, val h: Int)
 
@@ -196,7 +198,7 @@ private sealed interface Hit {
     class Body(val clip: Clip) : Hit
     class Handle(val clip: Clip, val start: Boolean) : Hit
     class Junction(val leftId: Long) : Hit
-    data object Plus : Hit
+    class Text(val id: String) : Hit
     class Caption(val id: String) : Hit
     data object AudioSlot : Hit
     data object TextSlot : Hit
@@ -210,13 +212,15 @@ class Geo(private val d: Density, val width: Float, val playheadMs: Long, val px
     fun x(t: Long) = centerX + (t - playheadMs) * pxPerMs
     private fun dp(v: Int) = with(d) { v.dp.toPx() }
     val rulerH = dp(28); val mainTop = dp(36); val mainH = dp(64)
-    val audioTop = mainTop + mainH + dp(10); val slotH = dp(44)
-    val textTop = audioTop + slotH + dp(8)
-    val junctionR = dp(15); val handleW = dp(14); val handleSlop = dp(14); val plusSize = dp(48); val corner = dp(8)
-    val total: Float get() = textTop + slotH
+    val slotH = dp(40)
+    val textTop = mainTop + mainH + dp(10)            // дорожка «Текст»
+    val capTop = textTop + slotH + dp(6)              // дорожка субтитров
+    val audioTop = capTop + slotH + dp(6)             // аудио (пока заглушка)
+    val junctionR = dp(15); val handleW = dp(14); val handleSlop = dp(14); val corner = dp(8)
+    val total: Float get() = audioTop + slotH
 }
 
-private class TlState(val geo: Geo, val clips: List<Clip>, val transitions: List<Transition>, val captions: List<CaptionItem>, val selectedId: Long?, val totalMs: Long) {
+private class TlState(val geo: Geo, val clips: List<Clip>, val transitions: List<Transition>, val captions: List<CaptionItem>, val texts: List<TextClip>, val selectedId: Long?, val totalMs: Long) {
     /** Стыки соседних клипов основной дорожки: (левый клип, правый клип). Кнопки скрыты у выбранного клипа. */
     fun junctions(): List<Pair<Clip, Clip>> {
         val main = clips.filter { it.row == 0 }
@@ -241,13 +245,14 @@ private class TlState(val geo: Geo, val clips: List<Clip>, val transitions: List
                 }
                 if (p.x in l..r) return Hit.Body(c)
             }
-            val plusL = g.x(clips.filter { it.row == 0 }.maxOfOrNull { it.endMs } ?: 0) + g.handleSlop
-            if (p.x in plusL..(plusL + g.plusSize + g.handleSlop)) return Hit.Plus
         }
         if (p.y in g.audioTop..(g.audioTop + g.slotH) && p.x >= g.x(0)) return Hit.AudioSlot
         if (p.y in g.textTop..(g.textTop + g.slotH)) {
-            captions.firstOrNull { p.x in g.x(it.startMs)..g.x(it.endMs) }?.let { return Hit.Caption(it.id) }
+            texts.lastOrNull { p.x in g.x(it.startMs)..g.x(it.endMs) }?.let { return Hit.Text(it.id) }
             if (p.x >= g.x(0)) return Hit.TextSlot
+        }
+        if (p.y in g.capTop..(g.capTop + g.slotH)) {
+            captions.firstOrNull { p.x in g.x(it.startMs)..g.x(it.endMs) }?.let { return Hit.Caption(it.id) }
         }
         return Hit.None
     }
@@ -277,27 +282,29 @@ private fun DrawScope.drawTimeline(s: TlState, measurer: TextMeasurer, pending: 
         t += stepMs
     }
 
-    // слоты аудио / текст
+    // слоты дорожек: текст, субтитры, аудио
     val slotFrom = g.x(0)
-    listOf(g.audioTop to "+  Добавить аудио", g.textTop to "+  Добавить текст").forEach { (top, label) ->
-        drawRoundRect(BaseColors.DarkSlot, Offset(max(slotFrom, -g.corner), top), Size(g.width - max(slotFrom, -g.corner) + g.corner, g.slotH), CornerRadius(g.corner))
-        val isText = top == g.textTop
-        if (!(isText && s.captions.isNotEmpty()))
-            safeText(measurer, label, Offset(max(slotFrom, 0f) + 16.dp.toPx(), top + 13.dp.toPx()), TextStyle(color = Color.White.copy(alpha = .85f), fontSize = 15.sp))
+    val slotLeft = max(slotFrom, -g.corner)
+    fun slot(top: Float, label: String?) {
+        drawRoundRect(BaseColors.DarkSlot, Offset(slotLeft, top), Size(max(0f, g.width - slotLeft + g.corner), g.slotH), CornerRadius(g.corner))
+        if (label != null) safeText(measurer, label, Offset(max(slotFrom, 0f) + 16.dp.toPx(), top + 11.dp.toPx()), TextStyle(color = Color.White.copy(alpha = .85f), fontSize = 14.sp))
     }
+    slot(g.textTop, if (s.texts.isEmpty()) "+  Добавить текст" else null)
+    slot(g.capTop, if (s.captions.isEmpty()) "Субтитры" else null)
+    slot(g.audioTop, "+  Добавить аудио")
 
-    // блоки субтитров в нижней строке
-    s.captions.forEach { c ->
-        val l = g.x(c.startMs); val r = g.x(c.endMs)
-        if (r < -20f || l > g.width + 20f || r - l < 2f) return@forEach
-        drawRoundRect(BaseColors.Cyan.copy(alpha = .35f), Offset(l, g.textTop + 4.dp.toPx()), Size(max(2f, r - l - 2f), g.slotH - 8.dp.toPx()), CornerRadius(6.dp.toPx()))
-        // текст рисуем только если блок достаточно широк и хоть частично виден
+    fun block(top: Float, l: Float, r: Float, color: Color, label: String) {
+        if (r < -20f || l > g.width + 20f || r - l < 2f) return
+        drawRoundRect(color, Offset(l, top + 4.dp.toPx()), Size(max(2f, r - l - 2f), g.slotH - 8.dp.toPx()), CornerRadius(6.dp.toPx()))
+        // подпись — только если блок достаточно широк и хоть частично виден
         if (r - l > 36.dp.toPx() && r > 0f && l < g.width) {
-            clipRect(left = max(l, 0f), top = g.textTop, right = min(r, g.width), bottom = g.textTop + g.slotH) {
-                safeText(measurer, c.text, Offset(max(l, 0f) + 6.dp.toPx(), g.textTop + 13.dp.toPx()), TextStyle(color = Color.White, fontSize = 12.sp))
+            clipRect(left = max(l, 0f), top = top, right = min(r, g.width), bottom = top + g.slotH) {
+                safeText(measurer, label, Offset(max(l, 0f) + 6.dp.toPx(), top + 11.dp.toPx()), TextStyle(color = Color.White, fontSize = 12.sp))
             }
         }
     }
+    s.texts.forEach { t -> block(g.textTop, g.x(t.startMs), g.x(t.endMs), Color(0xFFFF9800).copy(alpha = .55f), t.text) }
+    s.captions.forEach { c -> block(g.capTop, g.x(c.startMs), g.x(c.endMs), BaseColors.Cyan.copy(alpha = .35f), c.text) }
 
     // клипы основной дорожки
     val tileW = g.mainH
@@ -361,16 +368,6 @@ private fun DrawScope.drawTimeline(s: TlState, measurer: TextMeasurer, pending: 
         val left = Path().apply { moveTo(x - k * 1.6f, cy - k); lineTo(x - k * .15f, cy); lineTo(x - k * 1.6f, cy + k); close() }
         val right = Path().apply { moveTo(x + k * 1.6f, cy - k); lineTo(x + k * .15f, cy); lineTo(x + k * 1.6f, cy + k); close() }
         drawPath(left, ink); drawPath(right, ink)
-    }
-
-    // кнопка «+» в конце дорожки
-    val end = g.x(s.clips.filter { it.row == 0 }.maxOfOrNull { it.endMs } ?: 0) + g.handleSlop
-    if (end < g.width) {
-        val top = g.mainTop + (g.mainH - g.plusSize) / 2
-        drawRoundRect(Color.White, Offset(end, top), Size(g.plusSize, g.plusSize), CornerRadius(10.dp.toPx()))
-        val cx = end + g.plusSize / 2; val cy = top + g.plusSize / 2; val a = 9.dp.toPx()
-        drawLine(Color.Black, Offset(cx - a, cy), Offset(cx + a, cy), 2.5.dp.toPx())
-        drawLine(Color.Black, Offset(cx, cy - a), Offset(cx, cy + a), 2.5.dp.toPx())
     }
 
     // курсор
