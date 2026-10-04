@@ -3,6 +3,8 @@ package com.base.editor.pag
 import android.content.Context
 import android.graphics.Bitmap
 import org.libpag.PAGFile
+import org.libpag.PAGPlayer
+import org.libpag.PAGSurface
 
 /** Загрузка шаблона и подстановка текста пользователя. */
 object PagTitles {
@@ -27,19 +29,22 @@ object PagTitles {
         file.replaceText(0, data)
     }
 
-    /** Кадры шаблона для экспорта: PAGDecoder отдаёт Bitmap по номеру кадра. */
-    fun frameBitmaps(file: PAGFile, maxWidth: Int): PagFrames? = runCatching {
-        val scale = (maxWidth.toFloat() / file.width()).coerceIn(0.05f, 1f)
-        val decoder = org.libpag.PAGDecoder.Make(file, 30f, scale) ?: return null
-        PagFrames(decoder)
+    /** Кадры шаблона для экспорта: офскрин-рендер PAGPlayer → Bitmap по доле длительности (0..1). */
+    fun frameRenderer(file: PAGFile, targetWidth: Int): PagFrames? = runCatching {
+        val w = targetWidth.coerceAtLeast(2)
+        val h = (w.toFloat() * file.height() / file.width().coerceAtLeast(1)).toInt().coerceAtLeast(2)
+        val surface = PAGSurface.MakeOffscreen(w, h) ?: return null
+        val player = PAGPlayer().apply { this.surface = surface; composition = file }
+        PagFrames(player, surface)
     }.getOrNull()
 
-    class PagFrames(private val decoder: org.libpag.PAGDecoder) {
-        val frames get() = decoder.numFrames()
-        val frameRate get() = decoder.frameRate()
-        val width get() = decoder.width()
-        val height get() = decoder.height()
-        fun frame(index: Int): Bitmap? = runCatching { decoder.frameAtIndex(index.coerceIn(0, frames - 1)) }.getOrNull()
-        fun release() = runCatching { decoder.release() }
+    class PagFrames(private val player: PAGPlayer, private val surface: PAGSurface) {
+        fun frame(progress: Double): Bitmap? = runCatching {
+            player.progress = progress.coerceIn(0.0, 1.0)
+            player.flush()
+            surface.makeSnapshot()
+        }.getOrNull()
+
+        fun release() { runCatching { player.release() } }
     }
 }

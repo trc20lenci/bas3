@@ -27,7 +27,7 @@ class PagBitmapOverlay(context: Context, clips: List<TextClip>, canvas: android.
         items = clips.mapNotNull { c ->
             val ref = c.pagTemplate ?: return@mapNotNull null
             val file = PagTitles.load(context, store, ref, c.text.ifBlank { " " }) ?: return@mapNotNull null
-            PagTitles.frameBitmaps(file, canvas.width)?.let { Item(c, it) }
+            PagTitles.frameRenderer(file, canvas.width)?.let { Item(c, it) }
         }
     }
 
@@ -37,9 +37,8 @@ class PagBitmapOverlay(context: Context, clips: List<TextClip>, canvas: android.
         val t = presentationTimeUs / 1000
         val item = items.firstOrNull { it.clip.isVisibleAt(t) } ?: return blank
         val progress = (t - item.clip.startMs).toDouble() / item.clip.durationMs.coerceAtLeast(1)
-        val index = (progress * item.frames.frames).toInt()
-        return item.frames.frame(index) ?: blank
+        return item.frames.frame(progress) ?: blank
     }
 
-    fun release() = items.forEach { it.frames.release() }
+    override fun release() { items.forEach { it.frames.release() }; super.release() }
 }
