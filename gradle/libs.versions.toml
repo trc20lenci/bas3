@@ -9,7 +9,7 @@ lifecycle = "2.8.7"
 media3 = "1.11.1"
 junit = "4.13.2"
 litert = "1.0.1"
-libpag = "4.0.5.10"
+libpag = "4.5.98"
 json = "20240303"
 
 [libraries]
