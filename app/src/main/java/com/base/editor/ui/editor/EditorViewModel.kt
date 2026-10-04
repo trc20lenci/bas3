@@ -206,7 +206,7 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
     override fun addAudio() { onRequestAddAudio?.invoke() }
     override fun addText() { events.value = "Текстовые слои появятся на следующем этапе" }
 
-    /** URI аудиофайла из системного выбора (audio/*): проба длительности вне главного потока, затем блок на дорожке. */
+    /** URI аудиофайла из системного выбора аудио: проба длительности вне главного потока, затем блок на дорожке. */
     fun onAudioPicked(uri: android.net.Uri) {
         runCatching { getApplication<Application>().contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         viewModelScope.launch {
