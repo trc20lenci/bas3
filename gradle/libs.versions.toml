@@ -9,6 +9,7 @@ lifecycle = "2.8.7"
 media3 = "1.11.1"
 junit = "4.13.2"
 litert = "1.0.1"
+libpag = "4.0.5.10"
 json = "20240303"
 
 [libraries]
@@ -27,6 +28,7 @@ media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3" }
 media3-transformer = { module = "androidx.media3:media3-transformer", version.ref = "media3" }
 media3-effect = { module = "androidx.media3:media3-effect", version.ref = "media3" }
 litert = { module = "com.google.ai.edge.litert:litert", version.ref = "litert" }
+libpag = { module = "com.tencent.tav:libpag", version.ref = "libpag" }
 json = { module = "org.json:json", version.ref = "json" }
 junit = { module = "junit:junit", version.ref = "junit" }
 

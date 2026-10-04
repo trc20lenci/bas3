@@ -5,6 +5,7 @@ import androidx.compose.animation.core.FloatExponentialDecaySpec
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
@@ -108,6 +109,40 @@ fun TimelineView(
                     val slop = viewConfiguration.touchSlop
                     val s0 = cur
                     val hit = s0.hit(down.position)
+
+                    fun tap(h: Hit) = when (h) {
+                        is Hit.Body -> act.select(h.clip.id)
+                        is Hit.Handle -> act.select(h.clip.id)
+                        is Hit.Junction -> act.openTransitions(h.leftId)
+                        is Hit.Text -> act.openText(h.id)
+                        is Hit.Caption -> act.openCaption(h.id)
+                        Hit.AudioSlot -> act.addAudio()
+                        Hit.TextSlot -> act.addText()
+                        Hit.None -> act.select(null)
+                    }
+
+                    // Долгое нажатие на блок текста/субтитров: блок «отрывается» и едет за пальцем вдоль шкалы времени
+                    if (hit is Hit.Text || hit is Hit.Caption) {
+                        val pressed = awaitLongPressOrCancellation(down.id)
+                        if (pressed != null) {
+                            val baseStart = when (hit) {
+                                is Hit.Text -> s0.texts.firstOrNull { it.id == hit.id }?.startMs
+                                is Hit.Caption -> s0.captions.firstOrNull { it.id == hit.id }?.startMs
+                                else -> null
+                            } ?: return@awaitEachGesture
+                            val x0 = pressed.position.x
+                            while (true) {
+                                val ch = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                if (!ch.pressed) break
+                                val newStart = (baseStart + ((ch.position.x - x0) / cur.geo.pxPerMs).toLong()).coerceAtLeast(0L)
+                                if (hit is Hit.Text) act.moveText(hit.id, newStart) else if (hit is Hit.Caption) act.moveCaption(hit.id, newStart)
+                                ch.consume()
+                            }
+                            return@awaitEachGesture
+                        }
+                        // отпустили до долгого нажатия — обычный тап; сдвинули палец — продолжаем как скраб
+                        if (currentEvent.changes.firstOrNull { it.id == down.id }?.pressed != true) { tap(hit); return@awaitEachGesture }
+                    }
                     var mode = Mode.PENDING
                     var startClip: Clip? = null
                     var ph = s0.geo.playheadMs.toDouble()
@@ -159,16 +194,7 @@ fun TimelineView(
                     }
 
                     when (mode) {
-                        Mode.PENDING -> when (hit) {                                // тап
-                            is Hit.Body -> act.select(hit.clip.id)
-                            is Hit.Handle -> act.select(hit.clip.id)
-                            is Hit.Junction -> act.openTransitions(hit.leftId)
-                            is Hit.Text -> act.openText(hit.id)
-                            is Hit.Caption -> act.openCaption(hit.id)
-                            Hit.AudioSlot -> act.addAudio()
-                            Hit.TextSlot -> act.addText()
-                            Hit.None -> act.select(null)
-                        }
+                        Mode.PENDING -> tap(hit)                                    // тап
                         Mode.SCROLL -> {                                            // инерция
                             val vMs = -tracker.calculateVelocity().x / cur.geo.pxPerMs
                             flingRef[0] = scope.launch {

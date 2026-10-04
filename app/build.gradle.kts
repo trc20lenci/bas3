@@ -52,6 +52,7 @@ dependencies {
     implementation(libs.media3.transformer)
     implementation(libs.media3.effect)
     implementation(libs.litert)
+    implementation(libs.libpag)
 
     testImplementation(libs.junit)
     testImplementation(libs.json)

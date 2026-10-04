@@ -13,6 +13,7 @@ import com.base.editor.core.IMAGE_DEFAULT_MS
 import com.base.editor.core.MediaType
 import com.base.editor.core.PickedMedia
 import com.base.editor.core.TransitionCatalog
+import com.base.editor.core.ClipTransform
 import com.base.editor.domain.TimelineModel
 import com.base.editor.domain.TimelineState
 import com.base.editor.text.TextClip
@@ -83,6 +84,12 @@ class TimelineController(
     private var safeMode = false
     private var stopAtMs = -1L
     private val rebuildRequests = Channel<Unit>(Channel.CONFLATED)
+    /** true — плеер подготовил композицию и принимает seek/play. */
+    private var playerReady = false
+    private val _applied = MutableStateFlow(0)
+    /** Растёт каждый раз, когда новая композиция подготовлена и показана. */
+    val appliedVersion: StateFlow<Int> = _applied.asStateFlow()
+    private var pendingSeekMs = -1L
 
     init {
         scope.launch(dispatchers.default) {                 // конвейер пересборки
@@ -132,6 +139,8 @@ class TimelineController(
     fun updateText(clip: TextClip) { if (textTrack.update(clip)) textsChanged() }
     fun removeText(id: String) { if (textTrack.remove(id)) textsChanged() }
     fun findText(id: String) = textTrack.find(id)
+    /** Перетаскивание текстового блока по шкале (долгое нажатие). */
+    fun moveText(id: String, startMs: Long) { textTrack.find(id)?.let { updateText(it.copy(startMs = startMs.coerceAtLeast(0))) } }
     private fun textsChanged() { _texts.value = textTrack.all(); _committed.tryEmit(Unit) }
 
     /** Размер кадра превью/экспорта. Меняется редко (смена пропорций или качества). */
@@ -152,6 +161,9 @@ class TimelineController(
 
     /** Конец жеста: фиксируем и пересобираем композицию. */
     fun commitEdit() { model.discardCheckpointIfNoop(); afterStructuralEdit() }
+
+    /** Положение кадра клипа на холсте: между beginEdit() и commitEdit() — без пересборки плеера. */
+    fun setClipTransform(id: Long, t: ClipTransform) { if (model.setTransform(id, t)) publish() }
 
     fun split(id: Long): Boolean {
         pause(); model.checkpoint()
@@ -195,7 +207,7 @@ class TimelineController(
         val junction = _state.value.clips.firstOrNull { it.id == t.rightId }?.startMs ?: return
         seekTo((junction - PREVIEW_PAD_MS).coerceAtLeast(0))
         stopAtMs = junction + t.durationMs + PREVIEW_PAD_MS
-        player.play()
+        if (playerReady) player.play()
     }
 
     // ───────── воспроизведение ─────────
@@ -203,16 +215,32 @@ class TimelineController(
         if (_state.value.clips.none { it.row == 0 }) return
         stopAtMs = -1
         if (_playhead.value >= _state.value.totalMs - 50) seekTo(0)
+        if (!playerReady) return                                  // композиция ещё готовится
         player.play()
     }
 
-    fun pause() { player.pause() }
+    fun pause() { runCatching { player.pause() }.onFailure { Log.w(TAG, "pause до подготовки плеера", it) } }
     fun toggle() { if (player.isPlaying) pause() else play() }
 
+    /**
+     * Перемотка. CompositionPlayer создаёт внутреннее состояние только после prepare(); перемотка раньше
+     * этого момента падает в handleSeekInternal (NPE). Поэтому: позиция всегда зажимается в [0, длина],
+     * а пока плеер не готов — запоминается в [pendingSeekMs] и выполняется на первом STATE_READY.
+     */
     fun seekTo(ms: Long) {
-        val v = ms.coerceIn(0, _state.value.totalMs)
+        val total = _state.value.totalMs
+        val v = if (total > 0) ms.coerceIn(0L, total) else 0L
         _playhead.value = v
-        player.seekTo(v)
+        if (total <= 0) return                                   // композиции ещё нет — перематывать нечего
+        if (!playerReady || player.playbackState == Player.STATE_IDLE) { pendingSeekMs = v; return }
+        seekPlayerSafely(v)
+    }
+
+    private fun seekPlayerSafely(v: Long) {
+        try { player.seekTo(v); pendingSeekMs = -1 } catch (e: Exception) {
+            Log.w(TAG, "seekTo отложен: плеер не готов", e)
+            pendingSeekMs = v
+        }
     }
 
     fun setMuted(m: Boolean) { muted = m; player.volume = if (m) 0f else 1f }
@@ -242,7 +270,9 @@ class TimelineController(
     private fun applyComposition(composition: Composition?) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "Плеер можно трогать только с главного потока" }
         try {
+            playerReady = false                                  // пока новая композиция готовится — seek откладывается
             if (composition == null) { player.stop(); return }
+            pendingSeekMs = _playhead.value
             player.setComposition(composition, _playhead.value)
             player.prepare()
         } catch (e: Exception) {
@@ -255,7 +285,20 @@ class TimelineController(
     override fun onIsPlayingChanged(isPlaying: Boolean) { _playing.value = isPlaying }
 
     override fun onPlaybackStateChanged(playbackState: Int) {
-        if (playbackState == Player.STATE_ENDED) { _playing.value = false; _playhead.value = _state.value.totalMs }
+        when (playbackState) {
+            Player.STATE_IDLE -> playerReady = false
+            Player.STATE_READY, Player.STATE_ENDED -> {
+                if (!playerReady) _applied.value++
+                playerReady = true
+                val p = pendingSeekMs
+                if (p >= 0) {                                   // отложенная перемотка (скраб до готовности)
+                    val total = _state.value.totalMs
+                    if (total > 0 && p != player.currentPosition) seekPlayerSafely(p.coerceIn(0L, total)) else pendingSeekMs = -1
+                }
+                if (playbackState == Player.STATE_ENDED) { _playing.value = false; _playhead.value = _state.value.totalMs }
+            }
+            else -> Unit
+        }
     }
 
     /**

@@ -55,6 +55,8 @@ import com.base.editor.captions.CaptionPresets
 import com.base.editor.captions.CaptionStyle
 import com.base.editor.captions.GenerationState
 import com.base.editor.captions.WordAnimation
+import com.base.editor.captions.WordTimestamp
+import androidx.compose.foundation.layout.height
 import com.base.editor.data.Format
 import com.base.editor.ui.theme.BaseColors
 
@@ -152,11 +154,10 @@ private fun StyleTab(style: CaptionStyle, onPreset: (String) -> Unit, onStyle: (
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(CaptionPresets.all, key = { it.id }) { p ->
                 val sel = style.id == p.id
-                Column(Modifier.width(84.dp).clip(RoundedCornerShape(12.dp)).border(BorderStroke(if (sel) 2.dp else 0.dp, if (sel) BaseColors.Cyan else Color.Transparent), RoundedCornerShape(12.dp))
-                    .background(BaseColors.DarkSlot).clickable { onPreset(p.id) }.padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Аа", fontFamily = CaptionFonts.family(p.font, p.fontWeight, p.italic), color = Color(p.textColor), fontSize = 22.sp)
-                    Box(Modifier.padding(top = 4.dp).size(width = 28.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(Color(p.activeColor)))
-                    Text(p.name, color = Color.White, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                Column(Modifier.width(92.dp).clip(RoundedCornerShape(12.dp)).border(BorderStroke(if (sel) 2.dp else 0.dp, if (sel) BaseColors.Cyan else Color.Transparent), RoundedCornerShape(12.dp))
+                    .background(Color(0xFF3A3B40)).clickable { onPreset(p.id) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                    StylePreviewCard(p, Modifier.fillMaxWidth().height(56.dp))
+                    Text(p.name, color = Color.White, fontSize = 11.sp, modifier = Modifier.padding(vertical = 5.dp))
                 }
             }
         }
@@ -257,6 +258,21 @@ private fun TimeStepper(label: String, valueMs: Long, onChange: (Long) -> Unit) 
         listOf("−0.1" to -100L, "+0.1" to 100L).forEachIndexed { i, (t, d) ->
             if (i == 1) Text("%.1f с".format(valueMs / 1000f), color = Color.White, modifier = Modifier.width(64.dp).padding(horizontal = 6.dp), fontSize = 14.sp)
             Text(t, Modifier.clip(RoundedCornerShape(8.dp)).background(BaseColors.DarkSlot).clickable { onChange((valueMs + d).coerceAtLeast(0)) }.padding(horizontal = 12.dp, vertical = 7.dp), color = Color.White, fontSize = 13.sp)
+        }
+    }
+}
+
+private val previewItem = CaptionItem("preview", 0, 1000, "Аа Аа", listOf(WordTimestamp("Аа", 0, 400), WordTimestamp("Аа", 400, 1000)))
+
+/** Мини-карточка стиля: рисуется тем же рисовальщиком, что и субтитры в плеере (векторный текст, без картинок). */
+@Composable
+private fun StylePreviewCard(style: CaptionStyle, modifier: Modifier) {
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer(cacheSize = 8)
+    androidx.compose.foundation.Canvas(modifier) {
+        // «кадр» условной высоты 300 dp: размер шрифта получается ≈ 19 dp, но рисуем на маленькой карточке по центру
+        val viewport = 300.dp.toPx()
+        with(com.base.editor.captions.CaptionRenderer) {
+            drawCaption(measurer, previewItem, style.copy(maxWidthFrac = 1f, uppercase = false), timeMs = 700, centerY = size.height / 2, viewportHeight = viewport)
         }
     }
 }

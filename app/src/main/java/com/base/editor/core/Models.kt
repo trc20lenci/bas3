@@ -25,6 +25,15 @@ data class Clip(
  */
 data class Transition(val leftId: Long, val rightId: Long, val shaderId: String, val durationMs: Long)
 
+/**
+ * Положение кадра клипа на холсте. x/y — смещение в долях кадра (вправо/вниз), scale — масштаб,
+ * rotationDeg — поворот по часовой стрелке.
+ */
+data class ClipTransform(val x: Float = 0f, val y: Float = 0f, val scale: Float = 1f, val rotationDeg: Float = 0f) {
+    val isIdentity get() = x == 0f && y == 0f && scale == 1f && rotationDeg == 0f
+    fun sane() = copy(x = x.coerceIn(-2f, 2f), y = y.coerceIn(-2f, 2f), scale = scale.coerceIn(0.1f, 8f))
+}
+
 /** Файл, выбранный в галерее. */
 data class PickedMedia(val uri: String, val type: MediaType, val durationMs: Long) {
     fun encode() = "${type.code}|$durationMs|$uri"

@@ -44,6 +44,14 @@ object CaptionOps {
         return item.copy(startMs = start, endMs = end, words = item.words.map { it.copy(startMs = map(it.startMs), endMs = map(it.endMs)) })
     }
 
+    /** Сдвиг карточки целиком (длительность и пословные тайминги сохраняются). */
+    fun shift(item: CaptionItem, newStartMs: Long): CaptionItem {
+        val d = max(0, newStartMs) - item.startMs
+        if (d == 0L) return item
+        return item.copy(startMs = item.startMs + d, endMs = item.endMs + d,
+            words = item.words.map { it.copy(startMs = it.startMs + d, endMs = it.endMs + d) })
+    }
+
     /** Равномерная раскладка слов (вес — длина слова) по интервалу. */
     fun distribute(tokens: List<String>, startMs: Long, endMs: Long): List<WordTimestamp> {
         val total = max(1, tokens.sumOf { it.length + 1 }).toDouble()

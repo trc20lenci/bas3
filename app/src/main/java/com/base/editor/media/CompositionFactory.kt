@@ -7,7 +7,10 @@ import androidx.media3.common.C
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.MatrixTransformation
 import androidx.media3.effect.OverlayEffect
+import android.graphics.Matrix
+import com.base.editor.core.ClipTransform
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
@@ -65,6 +68,7 @@ class CompositionFactory(private val context: Context, private val catalog: Tran
             if (clip.startMs > cursorMs) seq.addGap((clip.startMs - cursorMs) * 1000)
 
             val effects = mutableListOf<Effect>(Presentation.createForWidthAndHeight(req.canvas.width, req.canvas.height, Presentation.LAYOUT_SCALE_TO_FIT))
+            req.state.transforms[clip.id]?.takeIf { !it.isIdentity }?.let { effects += clipTransformEffect(it, req.canvas) }
             if (!req.safeMode) {
                 inbound[clip.id]?.let { t ->
                     catalog.spec(t.shaderId)?.let { spec ->
@@ -81,10 +85,30 @@ class CompositionFactory(private val context: Context, private val catalog: Tran
         // эффект уровня композиции: время кадров — время всего проекта, слои совпадают с таймлайном
         val overlays = buildList<androidx.media3.effect.TextureOverlay> {
             req.captions?.takeIf { it.items.isNotEmpty() }?.let { add(CaptionBitmapOverlay(context, it, req.canvas)) }
-            if (req.texts.isNotEmpty()) add(TextBitmapOverlay(context, req.texts, req.canvas))
+            val plain = req.texts.filter { it.pagTemplate == null }
+            val animated = req.texts.filter { it.pagTemplate != null }
+            if (plain.isNotEmpty()) add(TextBitmapOverlay(context, plain, req.canvas))
+            if (animated.isNotEmpty()) add(PagBitmapOverlay(context, animated, req.canvas))
         }
         if (overlays.isNotEmpty()) builder.setEffects(Effects(emptyList(), listOf(OverlayEffect(overlays))))
         return builder.build()
+    }
+
+    /**
+     * Положение кадра на холсте. Поворот считается в «квадратных» единицах (поправка на пропорции кадра),
+     * иначе картинка перекашивалась бы. Размер кадра не меняется: лишнее обрезается, пустое заливается чёрным.
+     */
+    private fun clipTransformEffect(t: ClipTransform, canvas: Size): Effect {
+        val aspect = canvas.width.toFloat() / canvas.height
+        return MatrixTransformation {
+            Matrix().apply {
+                postScale(aspect, 1f)
+                postScale(t.scale, t.scale)
+                postRotate(-t.rotationDeg)                      // экранный поворот по часовой = против часовой в системе с осью Y вверх
+                postScale(1f / aspect, 1f)
+                postTranslate(t.x * 2f, -t.y * 2f)              // доля кадра → нормализованные координаты (ось Y вверх)
+            }
+        }
     }
 
     private fun editedItem(c: Clip, videoEffects: List<Effect>, removeAudio: Boolean): EditedMediaItem {

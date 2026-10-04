@@ -26,6 +26,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -96,6 +97,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.TextButton
 import com.base.editor.media.ExportState
 import com.base.editor.R
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.base.editor.captions.CaptionOps
 import androidx.compose.material.icons.rounded.ClosedCaption
 import com.base.editor.data.Format
@@ -129,6 +133,7 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
     val editingCaption by vm.editingCaptionId.collectAsStateWithLifecycle()
     val texts by vm.texts.collectAsStateWithLifecycle()
     val draft by vm.textDraft.collectAsStateWithLifecycle()
+    val liveClip by vm.liveClipTransform.collectAsStateWithLifecycle()
 
     SideEffect { vm.onRequestAddMedia = onAddMedia }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.scrubStart(); vm.saveNow() }
@@ -145,7 +150,8 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
             else -> close()
         }
     }
-    draft?.let { d -> TextEditorSheet(d.clip, d.isNew, onChange = vm::updateTextDraft, onDone = vm::commitText, onDelete = vm::deleteText, onCancel = vm::cancelText) }
+    val pagTemplates by vm.pagTemplates.collectAsStateWithLifecycle()
+    draft?.let { d -> TextEditorSheet(d.clip, d.isNew, onChange = vm::updateTextDraft, templates = pagTemplates, onImportPag = vm::importPag, onDone = vm::commitText, onDelete = vm::deleteText, onCancel = vm::cancelText) }
 
     Column(Modifier.fillMaxSize().background(BaseColors.DarkBg).systemBarsPadding()) {
         // верхняя панель
@@ -181,11 +187,24 @@ fun EditorScreen(onClose: () -> Unit, onAddMedia: () -> Unit, vm: EditorViewMode
                         player = vm.controller.player
                     }
                 },
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().graphicsLayer {
+                    // пока плеер пересобирается после жеста, показываем разницу между новым и «запечённым» положением
+                    liveClip?.let { l ->
+                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f + l.baked.x, 0.5f + l.baked.y)
+                        translationX = (l.current.x - l.baked.x) * size.width; translationY = (l.current.y - l.baked.y) * size.height
+                        scaleX = l.current.scale / l.baked.scale; scaleY = scaleX
+                        rotationZ = l.current.rotationDeg - l.baked.rotationDeg
+                    }
+                },
             )
             val visibleTexts = texts.filter { it.isVisibleAt(playhead) && it.id != draft?.clip?.id } + listOfNotNull(draft?.clip)
-            TextOverlay(visibleTexts, vm.videoAspect)
+            TextOverlay(visibleTexts.filter { it.pagTemplate == null }, vm.videoAspect)
+            visibleTexts.filter { it.pagTemplate != null }.forEach { PagTitleOverlay(it, playhead, vm.videoAspect) }
             CaptionOverlay(CaptionOps.captionAt(captionItems, playhead), captionStyle, playhead, vm.videoAspect)
+            // свободные жесты: перемещение / масштаб / поворот выделенного клипа или текста
+            val canvasText by vm.canvasTextId.collectAsStateWithLifecycle()
+            val target = remember(selected, canvasText, draft, texts, liveClip, playhead, clips) { vm.canvasTarget() }
+            CanvasTransformOverlay(vm.videoAspect, target, visibleTexts, vm)
         }
 
         // время / play / undo-redo
@@ -326,7 +345,7 @@ private fun TransitionPanel(
                 TransitionTile("Нет", Icons.Rounded.Block, selected = current == null) { onPick(null, dur.toLong()) }
             }
             items(items, key = { it.id }) { t ->
-                TransitionTile(t.label, Icons.Rounded.AutoAwesome, selected = current?.shaderId == t.id) { onPick(t.id, dur.toLong()) }
+                TransitionTile(t.label, Icons.Rounded.AutoAwesome, selected = current?.shaderId == t.id, previewAsset = "shaders/transitions/previews/${t.id}.webp") { onPick(t.id, dur.toLong()) }
             }
         }
         if (current != null && maxMs > minMs) {
@@ -345,15 +364,42 @@ private fun TransitionPanel(
 }
 
 @Composable
-private fun TransitionTile(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
+private fun TransitionTile(label: String, icon: ImageVector, selected: Boolean, previewAsset: String? = null, onClick: () -> Unit) {
     Column(
-        Modifier.width(78.dp).clip(RoundedCornerShape(12.dp))
+        Modifier.width(96.dp).clip(RoundedCornerShape(12.dp))
             .border(BorderStroke(if (selected) 2.dp else 0.dp, if (selected) BaseColors.Cyan else Color.Transparent), RoundedCornerShape(12.dp))
-            .background(BaseColors.DarkSlot).clickable(onClick = onClick).padding(vertical = 10.dp, horizontal = 4.dp),
+            .background(BaseColors.DarkSlot).clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, null, tint = if (selected) BaseColors.Cyan else Color.White, modifier = Modifier.size(26.dp))
-        Text(label, color = Color.White, fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 2, minLines = 2, modifier = Modifier.padding(top = 6.dp))
+        Box(Modifier.fillMaxWidth().height(54.dp).background(Color(0xFF15161A)), contentAlignment = Alignment.Center) {
+            if (previewAsset != null) LiveTransitionPreview(previewAsset, Modifier.fillMaxSize())
+            else Icon(icon, null, tint = if (selected) BaseColors.Cyan else Color.White, modifier = Modifier.size(26.dp))
+        }
+        Text(label, color = Color.White, fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 2, minLines = 2, modifier = Modifier.padding(horizontal = 4.dp, vertical = 5.dp))
+    }
+}
+
+/** Зацикленная анимация перехода (WebP из assets). Рисуется системным декодером, без сторонних библиотек. */
+@Composable
+private fun LiveTransitionPreview(asset: String, modifier: Modifier) {
+    val ctx = LocalContext.current
+    val drawable by produceState<android.graphics.drawable.Drawable?>(null, asset) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                android.graphics.ImageDecoder.decodeDrawable(android.graphics.ImageDecoder.createSource(ctx.assets, asset))
+            }.getOrNull()
+        }
+    }
+    drawable?.let { d ->
+        AndroidView(
+            factory = { c -> android.widget.ImageView(c).apply { scaleType = android.widget.ImageView.ScaleType.CENTER_CROP } },
+            update = { v ->
+                v.setImageDrawable(d)
+                (d as? android.graphics.drawable.AnimatedImageDrawable)?.apply { repeatCount = android.graphics.drawable.AnimatedImageDrawable.REPEAT_INFINITE; start() }
+            },
+            onRelease = { v -> (v.drawable as? android.graphics.drawable.AnimatedImageDrawable)?.stop() },
+            modifier = modifier,
+        )
     }
 }
 

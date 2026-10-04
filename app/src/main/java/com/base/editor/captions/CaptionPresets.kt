@@ -1,24 +1,27 @@
 package com.base.editor.captions
 
 /**
- * Стили BASE в духе коротких вертикальных видео: ЗАГЛАВНЫЕ жирные буквы, толстая чёрная обводка,
- * яркий цвет слова, которое звучит сейчас, и «выпрыгивание» слова на пружине.
+ * Стили BASE для коротких вертикальных видео: ЗАГЛАВНЫЕ жирные буквы, контрастная чёрная обводка
+ * (≈3–4 dp наружу), мягкая полупрозрачная тень без пересвета, неоновый акцент для звучащего слова
+ * и пружинное «выпрыгивание» 1.0 → 1.15.
  */
 object CaptionPresets {
     private fun c(v: Long) = v.toInt()
-    private val white = c(0xFFFFFFFF)
-    private val black = c(0xFF000000)
+    const val NEON_YELLOW = 0xFFFFE600L
+    const val NEON_GREEN = 0xFF00FF66L
 
     private val base = CaptionStyle(
         font = CaptionFont.MONTSERRAT, fontWeight = 900, uppercase = true, sizeFrac = 0.0625f,
-        textColor = white, strokeColor = black, strokeEm = 0.083f, maxWidthFrac = 0.90f, positionY = 0.78f,
+        textColor = c(0xFFFFFFFF), strokeColor = c(0xFF000000), strokeEm = 0.09f,
+        shadowColor = c(0x59000000), shadowBlurEm = 0.12f, shadowDyEm = 0.05f,     // тень ≈ 35% — читаемость без свечения
+        activeScale = 1.15f, maxWidthFrac = 0.90f, positionY = 0.78f,
     )
 
     val all: List<CaptionStyle> = listOf(
-        base.copy(id = "tiktok", name = "TikTok", activeColor = c(0xFF39E508), animation = WordAnimation.POP, activeScale = 1.18f),
-        base.copy(id = "contrast", name = "Контраст", activeColor = c(0xFFFFE600), sizeFrac = 0.058f, strokeEm = 0.095f, animation = WordAnimation.HIGHLIGHT),
-        base.copy(id = "karaoke", name = "Караоке", activeColor = c(0xFF00E5FF), animation = WordAnimation.KARAOKE),
-        base.copy(id = "pulse", name = "Пульс", activeColor = c(0xFFFF2D95), animation = WordAnimation.POP, activeScale = 1.3f),
+        base.copy(id = "yellow", name = "Жёлтый", activeColor = c(NEON_YELLOW), animation = WordAnimation.POP),
+        base.copy(id = "green", name = "Зелёный", activeColor = c(NEON_GREEN), animation = WordAnimation.POP),
+        base.copy(id = "karaoke", name = "Караоке", activeColor = c(NEON_YELLOW), animation = WordAnimation.KARAOKE),
+        base.copy(id = "contrast", name = "Контраст", activeColor = c(NEON_GREEN), strokeEm = 0.11f, sizeFrac = 0.058f, animation = WordAnimation.HIGHLIGHT),
     )
 
     val default: CaptionStyle = all.first()

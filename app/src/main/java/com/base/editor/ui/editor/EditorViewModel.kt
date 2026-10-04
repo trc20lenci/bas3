@@ -8,8 +8,10 @@ import androidx.media3.common.util.UnstableApi
 import com.base.editor.captions.CaptionItem
 import com.base.editor.captions.CaptionManager
 import com.base.editor.data.PickedMediaInbox
+import com.base.editor.pag.PagTemplateStore
 import com.base.editor.text.TextClip
 import com.base.editor.core.Clip
+import com.base.editor.core.ClipTransform
 import com.base.editor.core.PickedMedia
 import com.base.editor.core.Transition
 import com.base.editor.core.TransitionCatalog
@@ -36,6 +38,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -56,14 +59,19 @@ interface TimelineActions {
     fun openTransitions(leftId: Long)
     fun openCaption(id: String)
     fun openText(id: String)
+    fun moveText(id: String, startMs: Long)
+    fun moveCaption(id: String, startMs: Long)
 }
+
+/** Клип во время жеста: [baked] — положение, уже «запечённое» в показанной композиции; [current] — новое. */
+data class LiveClip(val id: Long, val baked: ClipTransform, val current: ClipTransform)
 
 /** Редактируемый текст: [isNew] — ещё не добавлен на дорожку. */
 data class TextDraft(val clip: TextClip, val isNew: Boolean)
 
 @OptIn(FlowPreview::class)
 @UnstableApi
-class EditorViewModel(app: Application, private val handle: SavedStateHandle) : AndroidViewModel(app), TimelineActions {
+class EditorViewModel(app: Application, private val handle: SavedStateHandle) : AndroidViewModel(app), TimelineActions, CanvasActions {
     private val projectId: String = checkNotNull(handle["projectId"])
     private val repo = ProjectRepository.get(app)
     private val dispatchers = AppDispatchers()
@@ -88,6 +96,8 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
     val pxPerSec = MutableStateFlow(60f)                  // масштаб: dp на секунду
     val resolution = MutableStateFlow("720p")
     val muted = MutableStateFlow(false)
+    /** true, пока проект загружается: жесты перемотки в это время игнорируются. */
+    val isLoading = MutableStateFlow(true)
     val events = MutableStateFlow<String?>(null)          // одноразовые сообщения для Toast
     val transitionFor = MutableStateFlow<Long?>(null)     // стык, для которого открыта панель переходов
     val transitionMaxMs = MutableStateFlow(0L)
@@ -95,6 +105,13 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
     val captionPanelOpen = MutableStateFlow(false)
     /** Текст, который сейчас редактируется (новый или существующий). */
     val textDraft = MutableStateFlow<TextDraft?>(null)
+    private val pagStore = PagTemplateStore(app)
+    /** Шаблоны анимированных титров (.pag): встроенные и импортированные пользователем. */
+    val pagTemplates = MutableStateFlow(pagStore.list())
+    /** Текстовый слой, выбранный тапом на холсте (вне редактора). */
+    val canvasTextId = MutableStateFlow<String?>(null)
+    /** Положение кадра клипа во время жеста: показывается сразу, пока плеер ещё не пересобрался. */
+    val liveClipTransform = MutableStateFlow<LiveClip?>(null)
     val texts get() = controller.texts
     val editingCaptionId = MutableStateFlow<String?>(null)
     val videoAspect get() = controller.canvas.let { it.width.toFloat() / it.height }
@@ -111,6 +128,7 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
             controller.loadTexts(repo.loadTexts(projectId))
             withContext(dispatchers.default) { detectAspect() }      // чтение метаданных — не на главном потоке
             applyCanvas()
+            isLoading.value = false
         }
         viewModelScope.launch { controller.events.collect { events.value = it } }
         viewModelScope.launch { controller.committed.debounce(600).collect { persist() } }
@@ -156,8 +174,11 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
 
     // ───────── TimelineActions ─────────
     override fun scrubStart() = controller.pause()
-    override fun scrubTo(ms: Long) = controller.seekTo(ms)
-    override fun select(id: Long?) { selectedId.value = id }
+    override fun scrubTo(ms: Long) {
+        if (isLoading.value || controller.state.value.clips.isEmpty()) return   // нет композиции — нечего перематывать
+        controller.seekTo(ms)
+    }
+    override fun select(id: Long?) { selectedId.value = id; if (id != null) canvasTextId.value = null }
     override fun editBegin() = controller.beginEdit()
     override fun moveClip(id: Long, startMs: Long) = controller.move(id, startMs, (8f / pxPerSec.value * 1000).toLong())
     override fun trimStart(id: Long, ms: Long) = controller.trimStart(id, ms)
@@ -211,6 +232,56 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
         controller.pause(); captions.generate(controller.state.value)
     }
 
+    // ───────── жесты на холсте ─────────
+    /** Что выделено на холсте: слой текста (черновик имеет приоритет) или клип под курсором. */
+    fun canvasTarget(): CanvasTarget? {
+        textDraft.value?.let { return CanvasTarget.Text(it.clip, isDraft = true) }
+        canvasTextId.value?.let { id -> controller.findText(id)?.let { return CanvasTarget.Text(it, isDraft = false) } }
+        val id = selectedId.value ?: return null
+        val clip = clips.value.firstOrNull { it.id == id && playheadMs.value >= it.startMs && playheadMs.value < it.endMs } ?: return null
+        val live = liveClipTransform.value?.takeIf { it.id == id }?.current
+        return CanvasTarget.Clip(id, live ?: controller.state.value.transformOf(id))
+    }
+
+    override fun onGestureStart() { controller.beginEdit() }
+
+    override fun onClipTransform(clipId: Long, transform: ClipTransform) {
+        val baked = liveClipTransform.value?.takeIf { it.id == clipId }?.baked ?: controller.state.value.transformOf(clipId)
+        liveClipTransform.value = LiveClip(clipId, baked, transform)
+        controller.setClipTransform(clipId, transform)
+    }
+
+    override fun onTextTransform(clip: TextClip, isDraft: Boolean) {
+        if (isDraft) updateTextDraft { clip } else controller.updateText(clip)
+    }
+
+    /** Конец жеста: фиксируем и пересобираем композицию; «живая» трансформация держится, пока не покажется новый кадр. */
+    override fun onGestureEnd() {
+        val live = liveClipTransform.value
+        if (live != null) {
+            val applied = controller.appliedVersion.value
+            controller.commitEdit()
+            viewModelScope.launch {
+                val deadline = System.currentTimeMillis() + 2500
+                while (controller.appliedVersion.value == applied && System.currentTimeMillis() < deadline) delay(40)
+                liveClipTransform.value = null
+            }
+        } else controller.pause()
+    }
+
+    override fun onTapText(id: String) {
+        if (canvasTextId.value == id && textDraft.value == null) openText(id)        // второй тап — редактор
+        else { canvasTextId.value = id; selectedId.value = null }
+    }
+
+    override fun onTapVideo() {
+        canvasTextId.value = null
+        if (textDraft.value != null) return
+        val t = playheadMs.value
+        val clip = clips.value.firstOrNull { it.row == 0 && t >= it.startMs && t < it.endMs }
+        selectedId.value = if (clip != null && selectedId.value != clip.id) clip.id else null
+    }
+
     // ───────── текст ─────────
     /** Кнопка «Текст»: открывает редактор нового слоя на позиции курсора. */
     fun openNewText() {
@@ -218,9 +289,13 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
         textDraft.value = TextDraft(TextClip(text = "", startMs = playheadMs.value), isNew = true)
     }
 
+    override fun moveText(id: String, startMs: Long) = controller.moveText(id, startMs)
+    override fun moveCaption(id: String, startMs: Long) = captions.moveTo(id, startMs)
+
     override fun openText(id: String) {
         val clip = controller.findText(id) ?: return
         controller.pause(); controller.seekTo(clip.startMs)
+        canvasTextId.value = id
         textDraft.value = TextDraft(clip, isNew = false)
     }
 
@@ -234,8 +309,17 @@ class EditorViewModel(app: Application, private val handle: SavedStateHandle) : 
         if (d.isNew) controller.addText(d.clip) else controller.updateText(d.clip)
     }
 
+    fun importPag(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val t = pagStore.import(uri)
+            if (t == null) { events.value = "Не удалось открыть файл шаблона"; return@launch }
+            pagTemplates.value = pagStore.list()
+            updateTextDraft { it.copy(pagTemplate = t.ref) }
+        }
+    }
+
     fun cancelText() { textDraft.value = null }
-    fun deleteText() { textDraft.value?.let { if (!it.isNew) controller.removeText(it.clip.id) }; textDraft.value = null }
+    fun deleteText() { textDraft.value?.let { if (!it.isNew) controller.removeText(it.clip.id) }; textDraft.value = null; canvasTextId.value = null }
 
     // ───────── экспорт ─────────
     fun startExport(quality: ExportQuality = ExportQuality.P1080) {

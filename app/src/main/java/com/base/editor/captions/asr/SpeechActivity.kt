@@ -20,6 +20,7 @@ data class SpeechWindow(val startMs: Long, val endMs: Long, val voiced: List<Spa
  */
 object SpeechActivity {
     private const val FRAME_MS = 20
+    private const val MIN_WORD_MS = 60L
     private const val RATE = 16_000
     private const val FRAME = RATE * FRAME_MS / 1000
 
@@ -90,10 +91,13 @@ object SpeechActivity {
     }
 
     /**
-     * Раскладывает слова по голосовым участкам (вес слова — число символов + 1).
-     * Время результата — в тех же координатах, что и [voiced].
+     * Раскладывает слова по голосовым участкам: сначала грубо — пропорционально длине слова (паузы пропускаются),
+     * затем каждая внутренняя граница слов «притягивается» к ближайшему провалу энергии звука
+     * (между словами и слогами речь на мгновение стихает). Так границы привязаны к реальному сигналу.
+     *
+     * @param energies энергии кадров по 20 мс от начала проанализированного звука (общая шкала с [voiced]).
      */
-    fun assignWordTimes(words: List<String>, voiced: List<Span>, fallback: Span): List<WordTimestamp> {
+    fun assignWordTimes(words: List<String>, voiced: List<Span>, fallback: Span, energies: FloatArray? = null): List<WordTimestamp> {
         if (words.isEmpty()) return emptyList()
         val spans = voiced.filter { it.lengthMs > 0 }.ifEmpty { listOf(fallback) }
         val total = spans.sumOf { it.lengthMs }.toDouble()
@@ -108,9 +112,42 @@ object SpeechActivity {
         }
 
         var acc = 0.0
-        return words.mapIndexed { i, w ->
+        val starts = LongArray(words.size); val ends = LongArray(words.size)
+        for (i in words.indices) {
             val a = acc / wsum * total; acc += weights[i]; val b = acc / wsum * total
-            WordTimestamp(w, toReal(a), max(toReal(b), toReal(a) + 1))
+            starts[i] = toReal(a); ends[i] = max(toReal(b), starts[i] + 1)
+        }
+        if (energies != null && energies.size > 4) snapBoundaries(starts, ends, energies)
+        return words.indices.map { WordTimestamp(words[it], starts[it], ends[it]) }
+    }
+
+    /** Двигает общие границы слов к минимумам сглаженной энергии в окне вокруг оценки. */
+    private fun snapBoundaries(starts: LongArray, ends: LongArray, energies: FloatArray) {
+        val smooth = FloatArray(energies.size) { i ->
+            var sum = 0f; var n = 0
+            for (k in -1..1) energies.getOrNull(i + k)?.let { sum += it; n++ }
+            sum / max(1, n)
+        }
+        val peak = (smooth.maxOrNull() ?: 0f).coerceAtLeast(1e-6f)
+        var lowerBound = starts[0]
+        for (i in 0 until starts.size - 1) {
+            val b = ends[i]
+            if (b != starts[i + 1]) continue                              // граница на паузе — уже точная
+            val shortest = min(ends[i] - starts[i], ends[i + 1] - starts[i + 1])
+            val window = (shortest * 0.20).toLong().coerceIn(60L, 260L)
+            val lo = max(b - window, lowerBound + MIN_WORD_MS).coerceAtLeast(0)
+            val hi = min(b + window, ends[i + 1] - MIN_WORD_MS)
+            if (hi <= lo) { lowerBound = b; continue }
+            var best = b; var bestScore = Float.MAX_VALUE
+            var t = lo
+            while (t <= hi) {
+                val f = (t / FRAME_MS).toInt().coerceIn(0, smooth.size - 1)
+                val score = smooth[f] / peak + 0.60f * abs(t - b).toFloat() / window   // провал энергии + близость к оценке
+                if (score < bestScore) { bestScore = score; best = t }
+                t += FRAME_MS
+            }
+            ends[i] = best; starts[i + 1] = best
+            lowerBound = best
         }
     }
 

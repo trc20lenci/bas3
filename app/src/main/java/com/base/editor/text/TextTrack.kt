@@ -38,5 +38,6 @@ class TextTrack {
         positionX = c.positionX.coerceIn(0f, 1f),
         positionY = c.positionY.coerceIn(0f, 1f),
         fontSizeSp = c.fontSizeSp.coerceIn(8f, 160f),
+        rotationDeg = ((c.rotationDeg % 360f) + 360f) % 360f,
     )
 }

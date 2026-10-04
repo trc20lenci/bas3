@@ -46,7 +46,7 @@ class AutoCaptionGenerator(
                         val text = clean(recognizer.transcribe(SpeechActivity.toFloats(pcm, w.startMs, w.endMs)).text)
                         if (text.isEmpty()) continue
                         val tokens = text.split(Regex("\\s+")).filter { it.isNotEmpty() }
-                        SpeechActivity.assignWordTimes(tokens, w.voiced, Span(w.startMs, w.endMs)).forEach {
+                        SpeechActivity.assignWordTimes(tokens, w.voiced, Span(w.startMs, w.endMs), energies).forEach {
                             words += it.copy(startMs = clip.startMs + it.startMs, endMs = clip.startMs + it.endMs)
                         }
                     }

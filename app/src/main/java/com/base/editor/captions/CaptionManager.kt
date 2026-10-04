@@ -84,6 +84,8 @@ class CaptionManager(
     // ───────── правка ─────────
     fun updateText(id: String, text: String) = edit(id) { CaptionOps.retext(it, text) }
     fun updateTiming(id: String, startMs: Long, endMs: Long) = edit(id) { CaptionOps.retime(it, startMs, endMs) }
+    /** Перетаскивание карточки по шкале (долгое нажатие на таймлайне). */
+    fun moveTo(id: String, startMs: Long) = edit(id) { CaptionOps.shift(it, startMs) }
 
     fun delete(id: String) { _items.update { l -> l.filterNot { it.id == id } }; changed() }
 

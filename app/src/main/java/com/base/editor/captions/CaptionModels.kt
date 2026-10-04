@@ -35,8 +35,8 @@ enum class WordAnimation(val label: String) {
  * Цвета — ARGB (Int).
  */
 data class CaptionStyle(
-    val id: String = "tiktok",
-    val name: String = "TikTok",
+    val id: String = "yellow",
+    val name: String = "Жёлтый",
     val font: CaptionFont = CaptionFont.MONTSERRAT,
     val fontWeight: Int = 900,
     val italic: Boolean = false,
@@ -45,21 +45,21 @@ data class CaptionStyle(
     val sizeFrac: Float = 0.0625f,
     val letterSpacingEm: Float = 0f,
     val textColor: Int = 0xFFFFFFFF.toInt(),
-    val activeColor: Int = 0xFF39E508.toInt(),
+    val activeColor: Int = 0xFFFFE600.toInt(),
     val strokeColor: Int = 0xFF000000.toInt(),
     /** Толщина обводки в долях размера шрифта (0 — без обводки). */
-    val strokeEm: Float = 0.083f,
+    val strokeEm: Float = 0.09f,
     /** Фоновая плашка; прозрачный (alpha = 0) — без плашки. */
     val backgroundColor: Int = 0x00000000,
     val backgroundPaddingEm: Float = 0.28f,
     val backgroundCornerEm: Float = 0.30f,
     /** Тень/свечение: свечение = тень без смещения и яркий цвет. */
-    val shadowColor: Int = 0x00000000,
-    val shadowBlurEm: Float = 0f,
-    val shadowDyEm: Float = 0f,
+    val shadowColor: Int = 0x59000000,
+    val shadowBlurEm: Float = 0.12f,
+    val shadowDyEm: Float = 0.05f,
     val animation: WordAnimation = WordAnimation.POP,
     /** Масштаб активного слова (для POP/BOUNCE). */
-    val activeScale: Float = 1.18f,
+    val activeScale: Float = 1.15f,
     /** Максимальная ширина блока, доля ширины кадра. */
     val maxWidthFrac: Float = 0.90f,
     /** Вертикальный центр блока, доля высоты кадра (0 — верх, 1 — низ). */

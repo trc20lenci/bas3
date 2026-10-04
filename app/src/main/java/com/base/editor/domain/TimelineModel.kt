@@ -1,13 +1,19 @@
 package com.base.editor.domain
 
 import com.base.editor.core.Clip
+import com.base.editor.core.ClipTransform
 import com.base.editor.core.MediaType
 import com.base.editor.core.Transition
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-data class TimelineState(val clips: List<Clip>, val transitions: List<Transition>) {
+data class TimelineState(
+    val clips: List<Clip>,
+    val transitions: List<Transition>,
+    val transforms: Map<Long, ClipTransform> = emptyMap(),
+) {
+    fun transformOf(clipId: Long) = transforms[clipId] ?: ClipTransform()
     val totalMs: Long get() = clips.maxOfOrNull { it.endMs } ?: 0L
 }
 
@@ -19,11 +25,14 @@ data class TimelineState(val clips: List<Clip>, val transitions: List<Transition
 class TimelineModel {
     private var clips = mutableListOf<Clip>()
     private var transitions = mutableListOf<Transition>()
+    private var transforms = mutableMapOf<Long, ClipTransform>()
     private var nextId = 1L
     private val undoStack = ArrayDeque<TimelineState>()
     private val redoStack = ArrayDeque<TimelineState>()
+    /** Состояние на начало текущего жеста (его позиции — точка отсчёта для move/trim, пока палец не отпущен). */
+    private var gestureBase: TimelineState? = null
 
-    fun state() = TimelineState(clips.toList(), transitions.toList())
+    fun state() = TimelineState(clips.toList(), transitions.toList(), transforms.toMap())
     val totalMs get() = state().totalMs
     val canUndo get() = undoStack.isNotEmpty()
     val canRedo get() = redoStack.isNotEmpty()
@@ -43,6 +52,7 @@ class TimelineModel {
      */
     fun moveClip(id: Long, newStartMs: Long, snapThresholdMs: Long, extraSnapMs: Long): Boolean {
         val c = find(id) ?: return false
+        if (c.row == 0) return moveMain(c, newStartMs)       // основная дорожка — магнитная: только перестановка
         val len = c.lengthMs
         val others = clips.filter { it.row == c.row && it.id != id }.sortedBy { it.startMs }
 
@@ -77,6 +87,7 @@ class TimelineModel {
 
     fun trimStart(id: Long, newStartMs: Long): Boolean {
         val c = find(id) ?: return false
+        if (c.row == 0) return trimMainStart(c, newStartMs)
         val prevEnd = clips.filter { it.row == c.row && it.id != id && it.endMs <= c.startMs }.maxOfOrNull { it.endMs } ?: 0L
         val bounded = c.srcDurMs > 0
         var lo = prevEnd
@@ -90,6 +101,7 @@ class TimelineModel {
 
     fun trimEnd(id: Long, newEndMs: Long): Boolean {
         val c = find(id) ?: return false
+        if (c.row == 0) return trimMainEnd(c, newEndMs)
         val nextStart = clips.filter { it.row == c.row && it.id != id && it.startMs >= c.endMs }.minOfOrNull { it.startMs } ?: INF
         var hi = nextStart
         if (c.srcDurMs > 0) hi = min(hi, c.startMs + (c.srcDurMs - c.srcInMs))
@@ -109,21 +121,70 @@ class TimelineModel {
         )
         replace(c.copy(endMs = atMs))
         clips += right
+        transforms[c.id]?.let { transforms[right.id] = it }
         // стык с правым соседом переезжает к правой половине
         transitions = transitions.map { if (it.leftId == id) it.copy(leftId = right.id) else it }.toMutableList()
         sanitize()
         return right.id
     }
 
-    /** На основной дорожке удаление «схлопывает» пустоту (ripple). */
+    /** Удаление на основной дорожке «схлопывает» пустоту: следующие клипы подтягиваются влево. */
     fun remove(id: Long): Boolean {
-        val c = find(id) ?: return false
+        if (find(id) == null) return false
         clips.removeAll { it.id == id }
-        if (c.row == 0) {
-            clips = clips.map { if (it.row == 0 && it.startMs >= c.startMs) it.copy(startMs = it.startMs - c.lengthMs, endMs = it.endMs - c.lengthMs) else it }.toMutableList()
+        sanitize()
+        return true
+    }
+
+    // ───────── магнитная основная дорожка (Ripple Edit) ─────────
+    private fun baseClip(id: Long): Clip? = gestureBase?.clips?.firstOrNull { it.id == id }
+
+    /** Подрезка слева: клип остаётся на месте, режется его начало, следующие клипы подтягиваются. */
+    private fun trimMainStart(current: Clip, newStartMs: Long): Boolean {
+        val base = baseClip(current.id)?.takeIf { it.row == 0 } ?: current
+        val bounded = base.srcDurMs > 0
+        val lo = if (bounded) -base.srcInMs else -MAX_EXTEND_MS
+        val hi = base.lengthMs - MIN_CLIP_MS
+        val delta = (newStartMs - base.startMs).coerceIn(lo, max(lo, hi))
+        replace(base.copy(srcInMs = if (bounded) base.srcInMs + delta else base.srcInMs, endMs = base.endMs - delta))
+        sanitize()
+        return true
+    }
+
+    /** Подрезка справа: меняется длина, следующие клипы смещаются так, чтобы пустот не было. */
+    private fun trimMainEnd(current: Clip, newEndMs: Long): Boolean {
+        val base = baseClip(current.id)?.takeIf { it.row == 0 } ?: current
+        val room = if (base.srcDurMs > 0) base.srcDurMs - base.srcInMs else MAX_EXTEND_MS
+        val len = (newEndMs - base.startMs).coerceIn(MIN_CLIP_MS, max(MIN_CLIP_MS, room))
+        replace(base.copy(endMs = base.startMs + len))
+        sanitize()
+        return true
+    }
+
+    /** Перетаскивание: клип занимает место по положению своего центра среди соседей (позиции соседей — на начало жеста). */
+    private fun moveMain(current: Clip, newStartMs: Long): Boolean {
+        val reference = (gestureBase?.clips ?: clips).filter { it.row == 0 }.sortedBy { it.startMs }
+        val others = reference.filter { it.id != current.id }
+        val center = newStartMs + current.lengthMs / 2
+        val index = others.count { it.startMs + it.lengthMs / 2 < center }
+        val order = others.map { it.id }.toMutableList().also { it.add(index, current.id) }
+        var cursor = 0L
+        for (id in order) {
+            val c = find(id) ?: continue
+            replace(c.copy(startMs = cursor, endMs = cursor + c.lengthMs)); cursor += c.lengthMs
         }
         sanitize()
         return true
+    }
+
+    /** Основная дорожка всегда без пустот: клипы идут подряд в порядке начала. */
+    private fun compactMain() {
+        var cursor = 0L
+        val moved = clips.filter { it.row == 0 }.sortedBy { it.startMs }.map { c ->
+            c.copy(startMs = cursor, endMs = cursor + c.lengthMs).also { cursor += c.lengthMs }
+        }
+        val byId = moved.associateBy { it.id }
+        clips = clips.map { byId[it.id] ?: it }.toMutableList()
     }
 
     // ───────── переходы ─────────
@@ -145,9 +206,18 @@ class TimelineModel {
         return true
     }
 
+    // ───────── положение кадра на холсте ─────────
+    fun setTransform(clipId: Long, t: ClipTransform): Boolean {
+        if (find(clipId) == null) return false
+        val v = t.sane()
+        if (v.isIdentity) transforms.remove(clipId) else transforms[clipId] = v
+        return true
+    }
+
     // ───────── история ─────────
     /** Вызывается один раз ПЕРЕД жестом/операцией. */
     fun checkpoint() {
+        gestureBase = state()
         undoStack.addLast(state())
         if (undoStack.size > MAX_HISTORY) undoStack.removeFirst()
         redoStack.clear()
@@ -176,11 +246,13 @@ class TimelineModel {
                 .append(c.srcDurMs).append('\t').append(c.uri).append('\n')
         }
         transitions.forEach { t -> append("T\t${t.leftId}\t${t.rightId}\t${t.shaderId}\t${t.durationMs}\n") }
+        transforms.forEach { (id, t) -> append("X\t$id\t${t.x}\t${t.y}\t${t.scale}\t${t.rotationDeg}\n") }
     }
 
     fun load(data: String): Boolean {
         val newClips = mutableListOf<Clip>()
         val newTr = mutableListOf<Transition>()
+        val newX = mutableMapOf<Long, ClipTransform>()
         var next = 1L
         var header = false
         for (line in data.lineSequence()) {
@@ -196,12 +268,17 @@ class TimelineModel {
                     if (t.size >= 5) newTr += Transition(t[1].toLong(), t[2].toLong(), t[3], t[4].toLong())
                     continue
                 }
+                if (f[0] == "X") {
+                    val t = line.split('\t')
+                    if (t.size >= 6) newX[t[1].toLong()] = ClipTransform(t[2].toFloat(), t[3].toFloat(), t[4].toFloat(), t[5].toFloat())
+                    continue
+                }
                 if (f.size < 8) continue
                 newClips += Clip(f[0].toLong(), f[1].toInt(), MediaType.of(f[2].toInt()), f[3].toLong(), f[4].toLong(), f[5].toLong(), f[6].toLong(), f[7])
             } catch (_: NumberFormatException) { return false }
         }
         if (!header) return false
-        clips = newClips; transitions = newTr; nextId = next
+        clips = newClips; transitions = newTr; transforms = newX; nextId = next
         undoStack.clear(); redoStack.clear()
         sanitize()
         return true
@@ -210,10 +287,12 @@ class TimelineModel {
     // ───────── внутреннее ─────────
     private fun find(id: Long) = clips.firstOrNull { it.id == id }
     private fun replace(c: Clip) { val i = clips.indexOfFirst { it.id == c.id }; if (i >= 0) clips[i] = c }
-    private fun restore(s: TimelineState) { clips = s.clips.toMutableList(); transitions = s.transitions.toMutableList() }
+    private fun restore(s: TimelineState) { clips = s.clips.toMutableList(); transitions = s.transitions.toMutableList(); transforms = s.transforms.toMutableMap() }
 
     /** Убирает переходы, потерявшие стык, и зажимает длительность в [MIN_TRANSITION_MS, длина входящего клипа]. */
     private fun sanitize() {
+        compactMain()
+        transforms.keys.retainAll(clips.map { it.id }.toSet())
         transitions = transitions.mapNotNull { t ->
             val l = find(t.leftId); val r = find(t.rightId)
             if (l == null || r == null || l.row != 0 || r.row != 0 || l.endMs != r.startMs) null
@@ -224,6 +303,7 @@ class TimelineModel {
     companion object {
         const val MIN_CLIP_MS = 100L
         const val MIN_TRANSITION_MS = 200L
+        private const val MAX_EXTEND_MS = 600_000L
         private const val INF = Long.MAX_VALUE / 4
         private const val MAX_HISTORY = 100
     }

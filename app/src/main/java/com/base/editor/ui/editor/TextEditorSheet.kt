@@ -63,14 +63,17 @@ private val TextPalette = listOf(
 fun TextEditorSheet(
     clip: TextClip, isNew: Boolean,
     onChange: ((TextClip) -> TextClip) -> Unit,
+    templates: List<com.base.editor.pag.PagTemplateStore.Template>, onImportPag: (android.net.Uri) -> Unit,
     onDone: () -> Unit, onDelete: () -> Unit, onCancel: () -> Unit,
 ) {
-    Dialog(onDismissRequest = onCancel, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    Dialog(onDismissRequest = onCancel, properties = DialogProperties(dismissOnClickOutside = false, usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window
         LaunchedEffect(window) {
             window?.apply {
                 setGravity(Gravity.BOTTOM)
                 setDimAmount(0f)
+                // касания выше панели уходят в редактор: текст можно двигать, масштабировать и вращать на холсте при открытой панели
+                setFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
                 setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
                 setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
             }
@@ -86,6 +89,14 @@ fun TextEditorSheet(
                 value = clip.text, onValueChange = { v -> onChange { it.copy(text = v) } },
                 modifier = Modifier.fillMaxWidth().focusRequester(focus), placeholder = { Text("Введите текст") }, minLines = 1, maxLines = 3,
             )
+
+            Label("Анимация титра")
+            val picker = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) onImportPag(uri) }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item { PagChip("Без анимации", clip.pagTemplate == null) { onChange { it.copy(pagTemplate = null) } } }
+                items(templates, key = { it.ref }) { t -> PagChip(t.title, clip.pagTemplate == t.ref) { onChange { it.copy(pagTemplate = t.ref) } } }
+                item { PagChip("+ Свой .pag", false) { picker.launch(arrayOf("*/*")) } }
+            }
 
             Label("Цвет текста")
             ColorChips(clip.textColor) { c -> onChange { it.copy(textColor = c) } }
@@ -111,6 +122,12 @@ fun TextEditorSheet(
             }
         }
     }
+}
+
+@Composable
+private fun PagChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    Text(text, Modifier.clip(RoundedCornerShape(16.dp)).background(if (selected) BaseColors.Cyan else BaseColors.DarkSlot).clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 7.dp),
+        color = if (selected) Color.Black else Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
 }
 
 @Composable private fun Label(t: String) = Text(t, color = Color.White.copy(alpha = .6f), fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp, bottom = 6.dp))

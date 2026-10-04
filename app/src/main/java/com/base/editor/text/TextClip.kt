@@ -21,6 +21,10 @@ data class TextClip(
     val fontSizeSp: Float = 24f,
     val textColor: Long = 0xFFFFFFFF,
     val backgroundColor: Long = 0x00000000,
+    /** Поворот по часовой стрелке, градусы. */
+    val rotationDeg: Float = 0f,
+    /** Имя анимированного шаблона титра (.pag) или null — обычный текст. */
+    val pagTemplate: String? = null,
 ) {
     val endMs get() = startMs + durationMs
     val hasBackground get() = (backgroundColor ushr 24) > 0L
